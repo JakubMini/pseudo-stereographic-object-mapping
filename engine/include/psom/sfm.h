@@ -10,8 +10,8 @@ namespace psom {
 
 // Structure from motion: where each photo was taken, worked out from the photos alone.
 struct SfmParams {
-    int max_side = 1280;       // features are found on images scaled so the long side is at most this
-    int max_features = 4000;
+    int max_side = 1024;       // features are found on images scaled so the long side is at most this
+    int max_features = 3000;
     double contrast = 0.02;    // SIFT contrast threshold; OpenCV's 0.04 starves low-contrast scenes (COLMAP's equivalent is ~0.02)
     bool equalize = true;      // local contrast equalisation first: a dim room still has texture
     int window = 10;           // each photo is matched with this many neighbours on either side (wrapping)
@@ -21,6 +21,7 @@ struct SfmParams {
     double pnp_px = 4.0;
     double max_reproj_px = 4.0;
     double min_angle_deg = 1.5;  // triangulation angle below which a point says nothing about depth
+    double ba_growth = 1.15;     // everything is re-adjusted each time the model grows by this factor
     bool refine_focal = true;    // off when the focal length is a factory calibration rather than a guess
     bool verbose = false;        // JSON lines on stderr: features, pairs, placements
 };

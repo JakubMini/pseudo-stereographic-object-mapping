@@ -319,7 +319,7 @@ Result run_sfm(const Session& s, const SfmParams& p, SfmResult& out, const Progr
         const auto [a, b] = todo[q];
         if (!im[a].index || !im[b].index) continue;
         cv::Mat ind, dist;
-        im[b].index->knnSearch(im[a].desc, ind, dist, 2, cv::flann::SearchParams(32));
+        im[b].index->knnSearch(im[a].desc, ind, dist, 2, cv::flann::SearchParams(16));
         std::vector<int> best_for_b(im[b].kp.size(), -1);
         std::vector<float> best_d(im[b].kp.size(), 1e30f);
         for (int r = 0; r < ind.rows; ++r) {
@@ -546,15 +546,24 @@ Result run_sfm(const Session& s, const SfmParams& p, SfmResult& out, const Progr
             tried_at[best] = best_n;
             continue;
         }
+        {  // polish the new camera alone on its inliers: cheap, and keeps drift down between full rounds
+            std::vector<cv::Point3d> o2;
+            std::vector<cv::Point2d> i2;
+            for (int r = 0; r < inl.rows; ++r) o2.push_back(obj[inl.at<int>(r)]), i2.push_back(img[inl.at<int>(r)]);
+            cv::solvePnPRefineLM(o2, i2, Km, cv::noArray(), rvec, tvec);
+        }
         cam_of[best] = int(cam_img.size());
         cam_img.push_back(best);
         R.push_back(exp_so3({rvec.at<double>(0), rvec.at<double>(1), rvec.at<double>(2)}));
         t.emplace_back(tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2));
         triangulate_new();
-        const bool full = cam_img.size() >= last_full * 1.2;
-        adjust(p.refine_focal && cam_img.size() >= 6, full ? 15 : 4);
-        if (full) last_full = cam_img.size();
-        triangulate_new();
+        // Re-adjusting everything after every photo costs O(photos^2) in all; between rounds the new
+        // camera's PnP pose is good enough to place the next one.
+        if (cam_img.size() >= last_full * p.ba_growth || cam_img.size() < 8) {
+            adjust(p.refine_focal && cam_img.size() >= 6, 8);
+            last_full = cam_img.size();
+            triangulate_new();
+        }
     }
     if (cam_img.size() < 3)
         return Result::fail("poses", "Only " + std::to_string(cam_img.size()) + " photos fitted together. Move slower and keep the object in view.");

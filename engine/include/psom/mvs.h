@@ -15,6 +15,9 @@ struct MvsParams {
     int neighbours = 4;
     int best_k = 2;             // costs aggregated per pixel; occluded views drop out
     int window = 7;             // ZNCC window
+    // ...for photos shrunk 2x or more to `width` (phone photos): measured on a real scan, 7 left twice
+    // the holes of 11 on a glossy cover and plain cloth; native-size images keep sharper edges at 7
+    int window_shrunk = 11;
     double min_zncc = 0.5;
     double min_texture = 2.0;   // grey-level std in the window, after contrast equalisation
     double max_rel_sigma = 0.02;

@@ -79,7 +79,7 @@ int main(int argc, char** argv) {
         if (auto v = value("--mem-mb")) o.mem_mb = size_t(std::atoll(v));
         if (auto v = value("--faces")) o.face_budget = size_t(std::atoll(v));
         if (auto v = value("--mvs-width")) o.mvs.width = std::atoi(v);
-        if (auto v = value("--mvs-window")) o.mvs.window = std::atoi(v);
+        if (auto v = value("--mvs-window")) o.mvs.window = o.mvs.window_shrunk = std::atoi(v);
         return report(psom::reconstruct(project, o, progress));
     }
     if (cmd == "export") return report(psom::export_project(project, progress));
@@ -90,6 +90,10 @@ int main(int argc, char** argv) {
         psom::SfmParams p;
         p.verbose = flag("--verbose");
         p.refine_focal = !s.focal_calibrated;
+        if (auto v = value("--max-side")) p.max_side = std::atoi(v);
+        if (auto v = value("--features")) p.max_features = std::atoi(v);
+        if (auto v = value("--window")) p.window = std::atoi(v);
+        if (auto v = value("--growth")) p.ba_growth = std::atof(v);
         psom::SfmResult out;
         r = psom::run_sfm(s, p, out);
         json j = {{"placed", out.frames.size()}, {"photos", s.frames.size()}, {"rms_px", out.rms_px}, {"focal_px", out.K.fx},

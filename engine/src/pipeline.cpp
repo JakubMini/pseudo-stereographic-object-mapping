@@ -1,6 +1,8 @@
 #include "psom/pipeline.h"
 
 #include <algorithm>
+#include <atomic>
+#include <thread>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -248,12 +250,14 @@ Result reconstruct(const fs::path& project, const Options& o, const Progress& pr
     P("depth", 0);
     const size_t n = s.frames.size();
     std::vector<DepthMap> maps(n);
+    MvsParams mvs = o.mvs;
+    if (s.width >= 2 * mvs.width) mvs.window = mvs.window_shrunk;
     json want = {{"version", 1}, {"force_mvs", o.force_mvs}, {"frames", json::array()}, {"poses", poses.value("id", std::string())},
-                 {"mvs", {{"width", o.mvs.width}, {"planes", o.mvs.planes}, {"neighbours", o.mvs.neighbours},
-                          {"best_k", o.mvs.best_k}, {"window", o.mvs.window}, {"min_zncc", o.mvs.min_zncc},
-                          {"min_texture", o.mvs.min_texture}, {"max_rel_sigma", o.mvs.max_rel_sigma},
-                          {"consist_rel", o.mvs.consist_rel}, {"consist_px", o.mvs.consist_px},
-                          {"min_consistent", o.mvs.min_consistent}}}};
+                 {"mvs", {{"width", mvs.width}, {"planes", mvs.planes}, {"neighbours", mvs.neighbours},
+                          {"best_k", mvs.best_k}, {"window", mvs.window}, {"min_zncc", mvs.min_zncc},
+                          {"min_texture", mvs.min_texture}, {"max_rel_sigma", mvs.max_rel_sigma},
+                          {"consist_rel", mvs.consist_rel}, {"consist_px", mvs.consist_px},
+                          {"min_consistent", mvs.min_consistent}}}};
     for (auto& f : s.frames) want["frames"].push_back(f.i);
     const json have = read_json(recon / "depth" / "manifest.json");
     bool cached = have.is_object() && have.value("complete", false) && have.value("key", json()) == want;
@@ -284,28 +288,34 @@ Result reconstruct(const fs::path& project, const Options& o, const Progress& pr
                     ++bad_images;
                     continue;
                 }
-                views[i] = make_view(g, s.frames[i].K, s.frames[i].T_wc, o.mvs.width);
+                views[i] = make_view(g, s.frames[i].K, s.frames[i].T_wc, mvs.width);
             }
             if (bad_images) res.warn(std::to_string(bad_images) + " image(s) unreadable or the wrong size; skipped");
             std::vector<std::vector<int>> nbrs(n);
             std::vector<cv::Matx44d> poses(n);
             for (size_t i = 0; i < n; ++i) poses[i] = s.frames[i].T_wc;
-            const int k = std::clamp(o.mvs.neighbours, 1, 16);
-            for (size_t q = 0; q < need.size(); ++q) {
+            const int k = std::clamp(mvs.neighbours, 1, 16);
+            // Photos are independent: in parallel. Progress only from this thread (JNI needs that).
+            const auto caller = std::this_thread::get_id();
+            std::atomic<size_t> done{0};
+            cv::parallel_for_(cv::Range(0, int(need.size())), [&](const cv::Range& range) {
+              for (int q = range.start; q < range.end; ++q) {
                 const size_t i = need[q];
-                P("depth", double(q) / need.size());
+                if (std::this_thread::get_id() == caller) P("depth", double(done) / need.size());
+                ++done;
                 if (views[i].gray.empty()) continue;
                 std::vector<const MvsView*> nv;
                 for (int j : select_neighbours(s, int(i), center, k))
                     if (!views[j].gray.empty()) nv.push_back(&views[j]), nbrs[i].push_back(j);
                 const auto [near, far] = depth_range(s, s.frames[i], center);
-                maps[i] = plane_sweep(views[i], nv, near, far, o.mvs);
+                maps[i] = plane_sweep(views[i], nv, near, far, mvs);
                 if (o.verbose)
                     std::fprintf(stderr, "{\"event\":\"mvs\",\"frame\":%d,\"neighbours\":%zu,\"near\":%.3f,\"far\":%.3f,\"valid\":%zu}\n",
                                  s.frames[i].i, nv.size(), near, far, maps[i].valid());
-            }
+              }
+            });
             for (size_t i = 0; i < n; ++i) poses[i] = pose_for(s.frames[i], maps[i]);
-            consistency_filter(maps, poses, nbrs, o.mvs);
+            consistency_filter(maps, poses, nbrs, mvs);
             if (o.verbose)
                 for (size_t i : need)
                     std::fprintf(stderr, "{\"event\":\"consistent\",\"frame\":%d,\"valid\":%zu}\n", s.frames[i].i, maps[i].valid());
