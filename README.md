@@ -115,4 +115,4 @@ android/                the app
 
 ## License
 
-MIT
+MIT. The bundled Geist and Geist Mono fonts are under the SIL Open Font License ([android/fonts-OFL.txt](android/fonts-OFL.txt)).

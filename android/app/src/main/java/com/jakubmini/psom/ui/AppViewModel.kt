@@ -37,6 +37,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val lastResult = MutableStateFlow<EngineResult?>(null)
     /** Bumped whenever recon/ changes, so the review screen reloads the mesh and report. */
     val reconVersion = MutableStateFlow(0)
+    /** The share sheet after an export. */
+    val sheet = MutableStateFlow(false)
+    val exporting = MutableStateFlow(false)
     private var machine = ScanStateMachine()
     private var busy = false
 
@@ -57,6 +60,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun openProjects() {
+        sheet.value = false
         refresh()
         machine.reset()
         state.value = machine.state
@@ -108,14 +112,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun export(dir: File) {
         if (busy) return
         busy = true
+        exporting.value = true
         progress.value = Progress("export", 0.0)
         viewModelScope.launch {
             val r = withContext(Dispatchers.Default) {
                 EngineBridge.runExport(dir.path) { s, f -> progress.value = Progress(s, f) }
             }
             busy = false
+            exporting.value = false
             lastResult.value = r
             machine.exported(r.ok, r.stage, r.error)
+            sheet.value = r.ok
             state.value = machine.state
             reconVersion.value++
             refresh()
@@ -144,6 +151,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun delete(p: ProjectInfo) {
         Projects.deleteProject(p.dir)
         refresh()
+    }
+
+    fun delete(dir: File) {
+        Projects.deleteProject(dir)
+        openProjects()
+    }
+
+    fun openSheet() {
+        sheet.value = true
+    }
+
+    fun closeSheet() {
+        sheet.value = false
     }
 
     fun report(dir: File): JsonObject? = try {

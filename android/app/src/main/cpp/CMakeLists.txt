@@ -16,3 +16,7 @@ add_subdirectory(${PSOM_ROOT}/engine engine)
 
 add_library(psom SHARED jni.cpp)
 target_link_libraries(psom PRIVATE psom_engine nlohmann_json::nlohmann_json log)
+
+# The engine is optimised in every build: an unoptimised debug engine takes minutes per scan.
+target_compile_options(psom_engine PRIVATE -O2)
+target_compile_definitions(psom_engine PRIVATE NDEBUG)

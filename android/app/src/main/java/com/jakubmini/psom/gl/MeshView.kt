@@ -154,6 +154,9 @@ class Crop(val center: DoubleArray, val axes: Array<DoubleArray>, val half: Doub
 }
 
 enum class ColorMode { SHADED, WEIGHT, DIVERSITY, UNCERTAINTY }
+
+private val TERRACOTTA = floatArrayOf(0.851f, 0.482f, 0.290f, 1f)
+private val WHITE = floatArrayOf(1f, 0.984f, 0.953f, 1f)
 enum class Tool { ORBIT, CROP, MEASURE }
 
 /** Orbit/zoom viewer for the reconstructed mesh, with the crop box and picked points drawn on top. */
@@ -299,6 +302,9 @@ class MeshView(context: Context) : GLSurfaceView(context) {
         private var target = floatArrayOf(0f, 0f, 0f)
         private var meshProg = 0
         private var lineProg = 0
+        private var bgProg = 0
+        private var viewW = 1f
+        private var viewH = 1f
         private var pos: FloatBuffer? = null
         private var nrm: FloatBuffer? = null
         private var col: FloatBuffer? = null
@@ -309,8 +315,24 @@ class MeshView(context: Context) : GLSurfaceView(context) {
         private var aspect = 1f
 
         override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
-            GLES30.glClearColor(0.11f, 0.11f, 0.12f, 1f)
+            GLES30.glClearColor(0.969f, 0.933f, 0.867f, 1f)
             GLES30.glEnable(GLES30.GL_DEPTH_TEST)
+            // a soft studio light behind the model: warm white in the middle, cream at the edges
+            bgProg = Shaders.program(
+                """
+                #version 300 es
+                in vec2 a_pos; void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
+                """,
+                """
+                #version 300 es
+                precision mediump float; uniform vec2 u_size; out vec4 o;
+                void main() {
+                  vec2 p = (gl_FragCoord.xy / u_size - 0.5) * vec2(u_size.x / u_size.y, 1.0);
+                  float t = smoothstep(0.05, 0.5, length(p));
+                  o = vec4(mix(vec3(1.0, 0.988, 0.965), vec3(0.969, 0.933, 0.867), t), 1.0);  // to the panel's cream
+                }
+                """,
+            )
             meshProg = Shaders.program(
                 """
                 #version 300 es
@@ -319,7 +341,7 @@ class MeshView(context: Context) : GLSurfaceView(context) {
                 void main() {
                   gl_Position = u_vp * vec4(a_pos, 1.0);
                   vec3 l = normalize(u_eye - a_pos);
-                  v_light = 0.25 + 0.75 * abs(dot(normalize(a_nrm), l));
+                  v_light = 0.42 + 0.58 * abs(dot(normalize(a_nrm), l));
                   v_col = a_col;
                 }
                 """,
@@ -337,8 +359,11 @@ class MeshView(context: Context) : GLSurfaceView(context) {
                 """,
                 """
                 #version 300 es
-                precision mediump float; uniform vec4 u_col; out vec4 o;
-                void main() { o = u_col; }
+                precision mediump float; uniform vec4 u_col; uniform float u_round; out vec4 o;
+                void main() {
+                  if (u_round > 0.5 && length(gl_PointCoord - vec2(0.5)) > 0.5) discard;  // round points
+                  o = u_col;
+                }
                 """,
             )
             mesh?.let { upload(it, ColorMode.SHADED) }
@@ -348,7 +373,7 @@ class MeshView(context: Context) : GLSurfaceView(context) {
             val (lo, hi) = m.bounds()
             target = FloatArray(3) { (lo[it] + hi[it]) / 2 }
             val radius = sqrt((0..2).sumOf { ((hi[it] - lo[it]) / 2).toDouble().let { d -> d * d } }).toFloat()
-            if (count == 0) distance = max(0.05f, radius * 3f)
+            if (count == 0) distance = max(0.05f, radius * 3.6f)
             val n = FloatArray(m.pos.size)
             for (t in 0 until m.tris.size / 3) {
                 val a = m.tris[3 * t] * 3
@@ -366,8 +391,9 @@ class MeshView(context: Context) : GLSurfaceView(context) {
                 ColorMode.DIVERSITY -> m.diversity
                 ColorMode.UNCERTAINTY -> m.sigma
             }
-            if (ch == null) colors.fill(0.82f)
-            else {
+            if (ch == null) {
+                for (i in 0 until m.vertices) { colors[3 * i] = 0.98f; colors[3 * i + 1] = 0.95f; colors[3 * i + 2] = 0.89f }
+            } else {
                 val sorted = ch.sorted()
                 val p5 = sorted[sorted.size / 20]
                 val p95 = sorted[sorted.size * 19 / 20]
@@ -375,9 +401,10 @@ class MeshView(context: Context) : GLSurfaceView(context) {
                     var t = if (p95 > p5) (ch[i] - p5) / (p95 - p5) else 0.5f
                     t = t.coerceIn(0f, 1f)
                     if (mode == ColorMode.UNCERTAINTY) t = 1 - t  // low sigma is good
-                    colors[3 * i] = 1 - t  // red = weak, green = strong
-                    colors[3 * i + 1] = 0.3f + 0.6f * t
-                    colors[3 * i + 2] = 0.25f
+                    // terracotta = weak, sea green = strong (they differ in lightness too)
+                    colors[3 * i] = 0.851f + (0.525f - 0.851f) * t
+                    colors[3 * i + 1] = 0.482f + (0.773f - 0.482f) * t
+                    colors[3 * i + 2] = 0.290f + (0.706f - 0.290f) * t
                 }
             }
             pos = fb(m.pos)
@@ -390,10 +417,22 @@ class MeshView(context: Context) : GLSurfaceView(context) {
         override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) {
             GLES30.glViewport(0, 0, w, h)
             aspect = w.toFloat() / max(1, h)
+            viewW = w.toFloat()
+            viewH = h.toFloat()
         }
 
         override fun onDrawFrame(gl: GL10?) {
             GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
+            GLES30.glDisable(GLES30.GL_DEPTH_TEST)
+            GLES30.glUseProgram(bgProg)
+            GLES30.glUniform2f(GLES30.glGetUniformLocation(bgProg, "u_size"), viewW, viewH)
+            val quad = fb(floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f))
+            val bl = GLES30.glGetAttribLocation(bgProg, "a_pos")
+            GLES30.glVertexAttribPointer(bl, 2, GLES30.GL_FLOAT, false, 0, quad)
+            GLES30.glEnableVertexAttribArray(bl)
+            GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+            GLES30.glDisableVertexAttribArray(bl)
+            GLES30.glEnable(GLES30.GL_DEPTH_TEST)
             val yr = Math.toRadians(yaw.toDouble())
             val pr = Math.toRadians(pitch.toDouble())
             val eye = floatArrayOf(
@@ -419,12 +458,17 @@ class MeshView(context: Context) : GLSurfaceView(context) {
             crop?.let { c ->
                 val k = c.corners()
                 val edges = intArrayOf(0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 1, 3, 4, 6, 5, 7, 0, 4, 1, 5, 2, 6, 3, 7)
-                lines(m, edges.flatMap { k[it].map(Double::toFloat) }.toFloatArray(), GLES30.GL_LINES, floatArrayOf(1f, 0.75f, 0.2f, 1f), 1f)
-                val handles = (0..2).flatMap { a -> listOf(-1, 1).flatMap { s -> c.faceCenter(a, s).map(Double::toFloat) } }
-                lines(m, handles.toFloatArray(), GLES30.GL_POINTS, floatArrayOf(1f, 0.75f, 0.2f, 1f), 28f)
+                lines(m, edges.flatMap { k[it].map(Double::toFloat) }.toFloatArray(), GLES30.GL_LINES, TERRACOTTA, 1f)
+                val handles = (0..2).flatMap { a -> listOf(-1, 1).flatMap { s -> c.faceCenter(a, s).map(Double::toFloat) } }.toFloatArray()
+                lines(m, handles, GLES30.GL_POINTS, TERRACOTTA, 40f)
+                lines(m, handles, GLES30.GL_POINTS, WHITE, 24f)
             }
-            if (marks.isNotEmpty())
-                lines(m, marks.flatMap { p -> p.map(Double::toFloat) }.toFloatArray(), GLES30.GL_POINTS, floatArrayOf(0.2f, 0.7f, 1f, 1f), 24f)
+            if (marks.isNotEmpty()) {
+                val pts = marks.flatMap { p -> p.map(Double::toFloat) }.toFloatArray()
+                if (marks.size == 2) lines(m, pts, GLES30.GL_LINES, TERRACOTTA, 1f)
+                lines(m, pts, GLES30.GL_POINTS, TERRACOTTA, 36f)
+                lines(m, pts, GLES30.GL_POINTS, WHITE, 18f)
+            }
         }
 
         private fun lines(m: FloatArray, pts: FloatArray, mode: Int, color: FloatArray, size: Float) {
@@ -433,6 +477,7 @@ class MeshView(context: Context) : GLSurfaceView(context) {
             GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(lineProg, "u_vp"), 1, false, m, 0)
             GLES30.glUniform4fv(GLES30.glGetUniformLocation(lineProg, "u_col"), 1, color, 0)
             GLES30.glUniform1f(GLES30.glGetUniformLocation(lineProg, "u_size"), size)
+            GLES30.glUniform1f(GLES30.glGetUniformLocation(lineProg, "u_round"), if (mode == GLES30.GL_POINTS) 1f else 0f)
             attr(lineProg, "a_pos", fb(pts))
             GLES30.glDrawArrays(mode, 0, pts.size / 3)
             GLES30.glEnable(GLES30.GL_DEPTH_TEST)

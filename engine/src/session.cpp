@@ -223,7 +223,8 @@ Result load_session(const fs::path& dir, Session& s) {
     }
 
     if (s.frames.size() < 3)
-        return Result::fail("load", "only " + std::to_string(s.frames.size()) + " valid keyframe(s); need at least 3");
+        return Result::fail("load", "Only " + std::to_string(s.frames.size()) + " usable frame" + (s.frames.size() == 1 ? "" : "s") +
+                                        ". At least 3 are needed.");
     r.ok = true;
     return r;
 }

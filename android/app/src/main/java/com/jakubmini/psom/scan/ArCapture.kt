@@ -47,6 +47,7 @@ class ArCapture(private val activity: Activity, private val root: File) : GLSurf
         val reason: String? = null,
         val scanning: Boolean = false,
         val keyframes: Int = 0,
+        val elapsedMs: Long = 0,
         val coverage: List<Boolean> = List(36) { false },
         val depth: Boolean = false,
         val error: String? = null,
@@ -81,6 +82,7 @@ class ArCapture(private val activity: Activity, private val root: File) : GLSurf
     private var metaWritten = false
     private var frameCount = 0
     private var lastT = 0L
+    private var scanStartT = 0L
 
     /** Opens the camera. Returns an error to show, or null. */
     fun resume(): String? {
@@ -179,6 +181,7 @@ class ArCapture(private val activity: Activity, private val root: File) : GLSurf
             ui.value = ui.value.copy(
                 tracking = tracking, reason = reason, scanning = scanning,
                 keyframes = selector.accepted, coverage = coverage.bins.toList(),
+                elapsedMs = if (scanning) (frame.timestamp - scanStartT) / 1_000_000 else 0,
             )
     }
 
@@ -198,6 +201,7 @@ class ArCapture(private val activity: Activity, private val root: File) : GLSurf
             (t is Plane && t.isPoseInPolygon(h.hitPose)) || t is Point
         }?.hitPose?.let { doubleArrayOf(it.tx().toDouble(), it.ty().toDouble(), it.tz().toDouble()) }
         val t = frame.timestamp
+        scanStartT = t
         val clockOffset = SystemClock.elapsedRealtimeNanos() - t
         val w = SessionWriter(dir)
         writer = w

@@ -4,17 +4,19 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.mutableStateOf
@@ -26,6 +28,11 @@ import com.google.ar.core.ArCoreApk
 import com.jakubmini.psom.scan.ArCapture
 import com.jakubmini.psom.ui.App
 import com.jakubmini.psom.ui.AppViewModel
+import com.jakubmini.psom.ui.Palette
+import com.jakubmini.psom.ui.PrimaryButton
+import com.jakubmini.psom.ui.PsomTheme
+import com.jakubmini.psom.ui.QuietButton
+import com.jakubmini.psom.ui.Type
 import com.jakubmini.psom.ui.Screen
 import kotlinx.coroutines.launch
 
@@ -36,24 +43,26 @@ class MainActivity : ComponentActivity() {
     private var installRequested = false
 
     private val askCamera = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (!granted) blocker.value = "The camera permission is needed to scan."
+        if (!granted) blocker.value = "Scanning needs the camera."
         else check()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge(statusBarStyle = SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT))
         capture = ArCapture(this, vm.root)
         // Saved scans stay usable without a camera: the checks run only when the scanner opens.
         lifecycleScope.launch { vm.screen.collect { if (it == Screen.Scan) check() } }
         setContent {
             val b = blocker.value
-            if (b != null) MaterialTheme {
-                Surface(Modifier.fillMaxSize()) {
-                    Column(Modifier.padding(24.dp)) {
-                        Text(b)
+            if (b != null) PsomTheme {
+                Surface(Modifier.fillMaxSize(), color = Palette.Cream) {
+                    Column(Modifier.statusBarsPadding().padding(24.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
+                        Spacer(Modifier.height(48.dp))
+                        Text(b, style = Type.Title, color = Palette.Ink)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = { blocker.value = null; check() }) { Text("Try again") }
-                            OutlinedButton(onClick = { blocker.value = null; vm.openProjects() }) { Text("Back to scans") }
+                            PrimaryButton("Try again") { blocker.value = null; check() }
+                            QuietButton("Back to scans") { blocker.value = null; vm.openProjects() }
                         }
                     }
                 }
@@ -84,8 +93,7 @@ class MainActivity : ComponentActivity() {
                 else -> {}
             }
         } catch (e: Exception) {
-            blocker.value = "Scanning needs Google Play Services for AR, which isn't available: " +
-                (e.message ?: e.javaClass.simpleName) + ". Saved scans can still be reviewed and exported."
+            blocker.value = "Scanning needs Google Play Services for AR."
         }
     }
 }
