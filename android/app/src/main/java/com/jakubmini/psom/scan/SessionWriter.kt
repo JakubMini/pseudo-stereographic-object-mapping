@@ -47,6 +47,8 @@ class Keyframe(
     /** x, y, z, confidence per point, world metres. */
     val points: FloatArray = FloatArray(0),
     val pointIds: IntArray = IntArray(0),
+    /** Pose of the camera frame the depth belongs to (row-major, GL), when it is older than this one. */
+    val depthPose: DoubleArray? = null,
 )
 
 /**
@@ -127,6 +129,7 @@ class SessionWriter(val project: File) {
             put("sharpness", f.sharpness)
             put("depth", withDepth)
             if (withDepth) put("depth_t_ns", f.depthTNs)
+            if (withDepth && f.depthPose != null) put("depth_pose", buildJsonArray { f.depthPose.forEach { add(it) } })
         }
         frames.write(line.toString())
         frames.write("\n")

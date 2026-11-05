@@ -92,4 +92,19 @@ object Projects {
     fun setCrop(project: File, crop: JsonObject?) = update(project) { put("crop", crop ?: JsonNull) }
 
     fun deleteProject(project: File) = project.deleteRecursively()
+
+    /** The scan's raw data (session, project.json, report) as one zip, to send for a closer look. */
+    fun zipScan(project: File, out: File): File {
+        out.parentFile?.mkdirs()
+        java.util.zip.ZipOutputStream(out.outputStream().buffered()).use { z ->
+            val files = File(project, "session").walkTopDown().filter { it.isFile }.toList() +
+                listOf(File(project, "project.json"), File(project, "recon/report.json")).filter { it.exists() }
+            for (f in files) {
+                z.putNextEntry(java.util.zip.ZipEntry(project.name + "/" + f.relativeTo(project).invariantSeparatorsPath))
+                f.inputStream().use { it.copyTo(z) }
+                z.closeEntry()
+            }
+        }
+        return out
+    }
 }

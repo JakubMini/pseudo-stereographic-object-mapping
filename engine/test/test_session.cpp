@@ -124,3 +124,25 @@ TEST(Session, TooFewFramesFails) {
     psom::Session s;
     EXPECT_FALSE(psom::load_session(p / "session", s).ok);
 }
+
+TEST(Session, LateDepthIsKeptWithItsOwnPose) {
+    const fs::path p = synth_copy("small", small(), "late");
+    auto lines = read_lines(p / "session" / "frames.jsonl");
+    json l3 = json::parse(lines[3]);
+    l3["depth_t_ns"] = l3["t_ns"].get<int64_t>() - 66'000'000;  // two frames late
+    json pose = json::parse(lines[2])["pose"];                  // the pose of the frame it came from
+    l3["depth_pose"] = pose;
+    lines[3] = l3.dump();
+    json l4 = json::parse(lines[4]);
+    l4["depth_t_ns"] = l4["t_ns"].get<int64_t>() - 66'000'000;  // late and no pose: still dropped
+    lines[4] = l4.dump();
+    write_lines(p / "session" / "frames.jsonl", lines);
+
+    psom::Session s;
+    ASSERT_TRUE(psom::load_session(p / "session", s).ok);
+    EXPECT_TRUE(s.frames[3].has_depth);
+    EXPECT_TRUE(s.frames[3].depth_has_pose);
+    EXPECT_NEAR(cv::norm(s.frames[3].T_wc_depth.get_minor<3, 1>(0, 3) - s.frames[2].T_wc.get_minor<3, 1>(0, 3)), 0, 1e-9);
+    EXPECT_FALSE(s.frames[4].has_depth);
+    EXPECT_EQ(s.depth_dropped_skew, 1);
+}

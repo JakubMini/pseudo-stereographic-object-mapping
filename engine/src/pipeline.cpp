@@ -225,6 +225,7 @@ Result reconstruct(const fs::path& project, const Options& o, const Progress& pr
                 const auto [near, far] = depth_range(s, s.frames[i], center);
                 maps[i] = plane_sweep(views[i], nv, near, far, o.mvs);
             }
+            for (size_t i = 0; i < n; ++i) poses[i] = pose_for(s.frames[i], maps[i]);
             consistency_filter(maps, poses, nbrs, o.mvs);
         }
         for (size_t i = 0; i < n; ++i) {
@@ -245,8 +246,8 @@ Result reconstruct(const fs::path& project, const Options& o, const Progress& pr
     }
     const double mvs_rejected = mvs_px ? 1.0 - double(mvs_valid) / mvs_px : 0.0;
     if (with_depth < 3)
-        return failed(Result::fail("depth", "not enough reliable depth: only " + std::to_string(with_depth) +
-                                                " keyframe(s) have any. More texture, light or movement around the object helps."));
+        return failed(Result::fail("depth", with_depth == 0 ? std::string("No frame had depth that could be trusted.")
+                                                            : "Only " + std::to_string(with_depth) + " frames had depth that could be trusted."));
     if (mvs_rejected > 0.6)
         res.warn("most image depth was rejected as unreliable (" + fmt("%.0f", mvs_rejected * 100) +
                  " %): low texture, blur or too little overlap");
@@ -286,7 +287,7 @@ Result reconstruct(const fs::path& project, const Options& o, const Progress& pr
         bool ok = true;
         for (size_t i = 0; i < n && ok; ++i) {
             if (maps[i].valid() == 0) continue;
-            ok = tsdf.integrate(maps[i], s.frames[i].T_wc);
+            ok = tsdf.integrate(maps[i], pose_for(s.frames[i], maps[i]));
             P("fusion", double(i + 1) / n);
         }
         if (ok) {

@@ -24,6 +24,11 @@ struct DepthMap {
     size_t valid() const;
 };
 
+// The pose a depth map was measured from: raw depth carries its own, MVS uses the frame's.
+inline const cv::Matx44d& pose_for(const Frame& f, const DepthMap& m) {
+    return m.source == DepthMap::Source::Raw ? f.T_wc_depth : f.T_wc;
+}
+
 // ARCore raw depth for one frame. False (with a reason) when the frame's depth can't be trusted.
 bool load_raw_depth(const Session& s, const Frame& f, DepthMap& out, std::string& why);
 

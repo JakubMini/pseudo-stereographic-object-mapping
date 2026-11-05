@@ -77,6 +77,18 @@ bool parse_frame(const json& j, const Session& s, Frame& f, bool& wants_depth, s
     }
     if (!valid_pose(T, why)) return false;
     f.T_wc = gl_to_cv(T);
+    f.T_wc_depth = f.T_wc;
+    if (j.contains("depth_pose")) {
+        if (!j["depth_pose"].is_array() || j["depth_pose"].size() != 16) return why = "depth_pose needs 16 numbers", false;
+        cv::Matx44d Td;
+        for (int k = 0; k < 16; ++k) {
+            if (!j["depth_pose"][k].is_number()) return why = "depth_pose has a non-number", false;
+            Td.val[k] = j["depth_pose"][k].get<double>();
+        }
+        if (!valid_pose(Td, why)) return why = "depth_pose: " + why, false;
+        f.T_wc_depth = gl_to_cv(Td);
+        f.depth_has_pose = true;
+    }
     if (!j.contains("K") || !j["K"].is_array() || j["K"].size() != 4) return why = "K needs 4 numbers", false;
     for (int k = 0; k < 4; ++k)
         if (!j["K"][k].is_number()) return why = "K has a non-number", false;
@@ -173,7 +185,10 @@ Result load_session(const fs::path& dir, Session& s) {
         }
         last_t = f.t_ns;
         if (wants_depth && s.depth_usable) {
-            if (f.depth_t_ns == 0 || std::llabs(f.depth_t_ns - f.t_ns) > s.max_skew_ns)
+            // With its own pose, late depth is fine (within half a second); without one it must
+            // belong to this very frame.
+            const int64_t limit = f.depth_has_pose ? 500'000'000 : s.max_skew_ns;
+            if (f.depth_t_ns == 0 || std::llabs(f.depth_t_ns - f.t_ns) > limit)
                 ++s.depth_dropped_skew;
             else
                 f.has_depth = fs::exists(s.depth_path(f)) && fs::exists(s.conf_path(f));

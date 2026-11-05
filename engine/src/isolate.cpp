@@ -97,11 +97,14 @@ std::vector<cv::Vec3d> depth_points(const Session& s, const std::vector<DepthMap
     for (size_t i = 0; i < maps.size() && i < s.frames.size(); ++i) {
         const DepthMap& m = maps[i];
         if (m.empty()) continue;
+        const cv::Matx44d& T = pose_for(s.frames[i], m);
+        const cv::Matx33d R = T.get_minor<3, 3>(0, 0);
+        const cv::Vec3d C(T(0, 3), T(1, 3), T(2, 3));
         for (int y = 0; y < m.K.h; y += step)
             for (int x = 0; x < m.K.w; x += step) {
                 const size_t k = size_t(y) * m.K.w + x;
                 if (m.d[k] <= 0 || m.sigma[k] > max_sigma) continue;
-                out.push_back(s.frames[i].to_world(m.K.ray(x, y) * double(m.d[k])));
+                out.push_back(R * (m.K.ray(x, y) * double(m.d[k])) + C);
             }
     }
     return out;

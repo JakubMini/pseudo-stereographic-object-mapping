@@ -70,6 +70,11 @@ a valid prefix. The loader drops a truncated last line.
  "tracking":"tracking","sharpness":182.5,"depth":true,"depth_t_ns":123456789000}
 ```
 
+Raw depth is produced at a lower rate than camera frames, so the newest depth image usually
+belongs to a frame or two earlier. The app then adds `"depth_pose"`: the pose (same convention)
+of the camera frame the depth was computed for, and the engine uses that pose for the depth. Without
+`depth_pose`, depth more than `depth.max_skew_ns` away from the frame is dropped.
+
 `i` is the file stem (`frames/000000.jpg`). `t_ns` strictly increases. `pose` has a finite, orthonormal
 rotation. The principal point lies inside the image.
 

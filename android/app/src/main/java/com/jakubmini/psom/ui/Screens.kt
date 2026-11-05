@@ -59,6 +59,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -100,6 +101,7 @@ import com.jakubmini.psom.scan.ArCapture
 import com.jakubmini.psom.scan.Phase
 import com.jakubmini.psom.scan.ProjectInfo
 import com.jakubmini.psom.scan.Projects
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -501,6 +503,19 @@ fun Shutter(bins: List<Boolean>, scanning: Boolean, lost: Boolean, onPress: () -
 
 // ---------- a project ----------
 
+/** Zips the scan's raw data off the main thread and opens the share sheet with it. */
+private fun shareScan(ctx: android.content.Context, scope: kotlinx.coroutines.CoroutineScope, dir: File) {
+    scope.launch {
+        val zip = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            Projects.zipScan(dir, File(ctx.cacheDir, "exports/scan-${dir.name}.zip"))
+        }
+        val uri = FileProvider.getUriForFile(ctx, ctx.packageName + ".files", zip)
+        val send = Intent(Intent.ACTION_SEND).setType("application/zip").putExtra(Intent.EXTRA_STREAM, uri)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        ctx.startActivity(Intent.createChooser(send, null))
+    }
+}
+
 @Composable
 fun ProjectScreen(vm: AppViewModel, dir: File) {
     val state by vm.state.collectAsState()
@@ -581,6 +596,11 @@ private fun stageName(s: String?) = when (s) {
 
 @Composable
 private fun FailedScreen(vm: AppViewModel, dir: File, stage: String?, error: String?) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val result by vm.lastResult.collectAsState()
+    val notes = result?.warnings.orEmpty()
+    var showNotes by remember { mutableStateOf(false) }
     val frames = remember(dir) { Projects.info(dir).keyframes }
     val userCrop = remember(dir) { (Projects.read(dir)["crop"] as? JsonObject)?.get("source")?.jsonPrimitive?.content == "user" }
     Column(Modifier.fillMaxSize().background(Palette.Cream).statusBarsPadding().navigationBarsPadding()) {
@@ -603,11 +623,21 @@ private fun FailedScreen(vm: AppViewModel, dir: File, stage: String?, error: Str
             Hairline()
             FactRow("Your scan", "Saved, $frames frames")
             Hairline()
+            if (notes.isNotEmpty()) {
+                Text(
+                    if (showNotes) "Hide notes" else "${notes.size} note${if (notes.size > 1) "s" else ""}", style = Type.SmallStrong, color = Palette.Ink,
+                    modifier = Modifier.clickable(role = Role.Button) { showNotes = !showNotes }.padding(vertical = 12.dp),
+                )
+                if (showNotes) notes.forEach { Text(it, style = Type.Small, color = Palette.Ink2, modifier = Modifier.padding(bottom = 6.dp)) }
+            }
         }
         Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
             PrimaryButton("Try again", Modifier.fillMaxWidth()) { vm.reconstruct(dir) }
             if (userCrop) QuietButton("Back to automatic crop") { vm.setCrop(dir, null) }
-            QuietButton("Scan again", vm::openScan)
+            Row {
+                QuietButton("Scan again", vm::openScan)
+                QuietButton("Share scan files") { shareScan(ctx, scope, dir) }
+            }
         }
     }
 }
@@ -636,6 +666,7 @@ private fun ReviewScreen(vm: AppViewModel, dir: File, exported: Boolean, error: 
     val factor = remember(version) { Projects.scaleFactor(dir) }
     var menu by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val view = remember { MeshView(ctx) }
 
     LaunchedEffect(mesh) { mesh?.let { view.setMesh(it, color) } }
@@ -668,6 +699,7 @@ private fun ReviewScreen(vm: AppViewModel, dir: File, exported: Boolean, error: 
                     }
                     DropdownMenu(menu, { menu = false }, containerColor = Paper) {
                         DropdownMenuItem({ Text("Rebuild", style = Type.Body) }, { menu = false; vm.reconstruct(dir) })
+                        DropdownMenuItem({ Text("Share scan files", style = Type.Body) }, { menu = false; shareScan(ctx, scope, dir) })
                         DropdownMenuItem({ Text("Delete scan", style = Type.Body, color = Warn) }, { menu = false; confirmDelete = true })
                     }
                 }

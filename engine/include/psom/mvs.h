@@ -16,11 +16,11 @@ struct MvsParams {
     int best_k = 2;             // costs aggregated per pixel; occluded views drop out
     int window = 7;             // ZNCC window
     double min_zncc = 0.5;
-    double min_texture = 2.0;   // grey-level std in the window
+    double min_texture = 2.0;   // grey-level std in the window, after contrast equalisation
     double max_rel_sigma = 0.02;
-    double consist_rel = 0.01;  // depth agreement, relative
-    double consist_px = 1.0;    // reprojection agreement, pixels
-    int min_consistent = 2;
+    double consist_rel = 0.02;  // depth agreement, relative
+    double consist_px = 2.0;    // reprojection agreement, pixels
+    int min_consistent = 1;     // independent views that must agree; fusion averages the rest
 };
 
 struct MvsView {

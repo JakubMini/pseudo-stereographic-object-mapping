@@ -85,6 +85,7 @@ class ArCapture(private val activity: Activity, private val root: File) : GLSurf
     private var lastT = 0L
     private var scanStartT = 0L
     private val inFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val recentPoses = ArrayDeque<Pair<Long, DoubleArray>>()
 
     /** Opens the camera. Returns an error to show, or null. */
     fun resume(): String? {
@@ -169,6 +170,13 @@ class ArCapture(private val activity: Activity, private val root: File) : GLSurf
         val tracking = cam.trackingState == TrackingState.TRACKING
         val reason = if (tracking) null else cam.trackingFailureReason.name
         lastT = frame.timestamp
+        if (scanning) {
+            // remembered so late raw depth can be paired with the frame it was measured from
+            val m = FloatArray(16)
+            cam.pose.toMatrix(m, 0)
+            recentPoses.addLast(frame.timestamp to DoubleArray(16) { m[(it % 4) * 4 + it / 4].toDouble() })
+            if (recentPoses.size > 90) recentPoses.removeFirst()
+        }
 
         if (startRequested && !scanning) {
             startRequested = false
@@ -194,6 +202,7 @@ class ArCapture(private val activity: Activity, private val root: File) : GLSurf
         project = dir
         selector = KeyframeSelector()
         inFlight.set(false)
+        recentPoses.clear()
         synchronized(coverage) {
             coverage.clear()
             axes = AxesConvergence()
@@ -287,6 +296,11 @@ class ArCapture(private val activity: Activity, private val root: File) : GLSurf
         val centre = doubleArrayOf(p.tx().toDouble(), p.ty().toDouble(), p.tz().toDouble())
         val z = p.zAxis
         val forward = doubleArrayOf(-z[0].toDouble(), -z[1].toDouble(), -z[2].toDouble())
+        val depthPose = if (depth != null) recentPoses.lastOrNull { kotlin.math.abs(it.first - dt) < 1_000_000L }?.second else null
+        if (depthPose == null) {  // too old to pair with a pose: dropped rather than misplaced
+            depth = null
+            conf = null
+        }
         val d = depth
         val c = conf
         if (!metaWritten && (!depthMode || d != null)) {
@@ -308,7 +322,7 @@ class ArCapture(private val activity: Activity, private val root: File) : GLSurf
                 val keep = d != null && c != null && sized
                 w.keyframe(
                     Keyframe(t, rowMajor, k, sharp, out.toByteArray(), if (keep) d!!.shorts() else null, if (keep) c!!.bytes() else null,
-                        d?.width ?: 0, d?.height ?: 0, dt, pts, ids),
+                        d?.width ?: 0, d?.height ?: 0, dt, pts, ids, if (keep) depthPose else null),
                 )
                 // coverage around the hit-test point, or where the camera axes cross
                 synchronized(coverage) {

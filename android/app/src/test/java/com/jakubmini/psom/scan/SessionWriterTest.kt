@@ -1,6 +1,7 @@
 package com.jakubmini.psom.scan
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
@@ -110,5 +111,23 @@ class SessionWriterTest {
         Projects.setScale(p, doubleArrayOf(0.0, 0.0, 0.0), doubleArrayOf(0.1, 0.0, 0.0), 110.0, 1.1)
         assertEquals(1.1, Projects.scaleFactor(p), 1e-12)
         assertEquals("captured", Projects.info(p).status)
+    }
+
+    @Test fun lateDepthCarriesItsPoseAndScansZip() {
+        val p = File(tmp.root, "p4")
+        val w = SessionWriter(p)
+        w.meta(meta())
+        val late = DoubleArray(16) { if (it % 5 == 0) 1.0 else 0.0 }.also { it[3] = 0.5 }
+        w.keyframe(Keyframe(10, frame(10, true).pose, doubleArrayOf(500.0, 500.0, 320.0, 240.0), 50.0, byteArrayOf(1),
+            ShortArray(160 * 120), ByteArray(160 * 120), 160, 120, 5, depthPose = late))
+        w.finish(20, emptyMap())
+        val line = Json.parseToJsonElement(File(p, "session/frames.jsonl").readLines()[0]).jsonObject
+        assertEquals("0.5", line["depth_pose"]!!.jsonArray[3].jsonPrimitive.content)
+
+        val zip = Projects.zipScan(p, File(tmp.root, "out/p4.zip"))
+        val names = java.util.zip.ZipFile(zip).use { z -> z.entries().toList().map { it.name } }
+        assertTrue(names.contains("p4/session/frames.jsonl"))
+        assertTrue(names.contains("p4/session/depth/000000.png"))
+        assertTrue(names.contains("p4/project.json"))
     }
 }

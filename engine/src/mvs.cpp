@@ -40,6 +40,9 @@ MvsView make_view(const cv::Mat& gray8, const Intrinsics& K, const cv::Matx44d& 
     const int h = int(std::lround(double(gray8.rows) * w / gray8.cols));
     cv::Mat small;
     cv::resize(gray8, small, {w, h}, 0, 0, cv::INTER_AREA);
+    // Local contrast equalisation: a dim room or a dark object still has texture, just little
+    // contrast, and the texture test below should see it. ZNCC is unaffected by the gain.
+    cv::createCLAHE(3.0, cv::Size(8, 8))->apply(small, small);
     small.convertTo(v.gray, CV_32F);
     v.K = K.scaled(w, h);
     v.T_wc = T_wc;

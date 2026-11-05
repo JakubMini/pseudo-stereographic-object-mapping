@@ -29,6 +29,9 @@ struct Frame {
     double sharpness = 0;
     bool has_depth = false;
     int64_t depth_t_ns = 0;
+    // Raw depth arrives a frame or two late; this is the pose of the camera frame it belongs to.
+    cv::Matx44d T_wc_depth = cv::Matx44d::eye();
+    bool depth_has_pose = false;
 
     cv::Matx33d R() const { return T_wc.get_minor<3, 3>(0, 0); }
     cv::Vec3d center() const { return {T_wc(0, 3), T_wc(1, 3), T_wc(2, 3)}; }
