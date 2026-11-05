@@ -32,7 +32,10 @@
 #include <TopoDS.hxx>
 #include <TopoDS_Shell.hxx>
 #include <TopoDS_Solid.hxx>
+#include <TopoDS_Compound.hxx>
 #include <TopoDS_Wire.hxx>
+#include <functional>
+#include <numeric>
 #include <gp_Pln.hxx>
 
 namespace fs = std::filesystem;
@@ -114,6 +117,8 @@ Result export_step(const Mesh& m, double s, const Topology& topo, const fs::path
         TopoDS_Shell shell;
         B.MakeShell(shell);
         size_t failed = 0, faces = 0;
+        std::vector<TopoDS_Face> built;
+        std::vector<int> built_tri;  // mesh face of each built face
         for (auto& t : m.f) {
             const gp_Pnt a = BRep_Tool::Pnt(V[t[0]]), b = BRep_Tool::Pnt(V[t[1]]), c = BRep_Tool::Pnt(V[t[2]]);
             const gp_Vec n = gp_Vec(a, b).Crossed(gp_Vec(a, c));
@@ -140,6 +145,8 @@ Result export_step(const Mesh& m, double s, const Topology& topo, const fs::path
                 continue;
             }
             B.Add(shell, mf.Face());
+            built.push_back(mf.Face());
+            built_tri.push_back(int(&t - &m.f[0]));
             ++faces;
         }
         if (faces == 0) return Result::fail("export", "no face could be built");
@@ -178,7 +185,35 @@ Result export_step(const Mesh& m, double s, const Topology& topo, const fs::path
             if (multi_edges) why += (why.empty() ? "" : "; ") + std::to_string(multi_edges) + " edges shared by 3+ faces";
             r.warn("exported as an OPEN SHELL, not a solid: " + (why.empty() ? std::string("not closed") : why) +
                    ". Missing surfaces were not invented.");
-            if (!BRepCheck_Analyzer(shell).IsValid()) return Result::fail("export", "the shell failed B-rep validation");
+            // One open shell per edge-connected patch: patches that only touch at a vertex, or edges
+            // shared by three faces, can't live in one valid shell.
+            std::unordered_map<uint64_t, std::vector<int>> by_edge;
+            for (int q = 0; q < int(built.size()); ++q) {
+                const auto& t = m.f[built_tri[q]];
+                for (int k = 0; k < 3; ++k) {
+                    const int a = t[k], b = t[(k + 1) % 3];
+                    by_edge[(uint64_t(std::min(a, b)) << 32) | uint32_t(std::max(a, b))].push_back(q);
+                }
+            }
+            std::vector<int> parent(built.size());
+            std::iota(parent.begin(), parent.end(), 0);
+            std::function<int(int)> find = [&](int x) { return parent[x] == x ? x : parent[x] = find(parent[x]); };
+            for (auto& [_, fs2] : by_edge)
+                if (fs2.size() == 2) parent[find(fs2[0])] = find(fs2[1]);
+            std::unordered_map<int, TopoDS_Shell> shells;
+            for (int q = 0; q < int(built.size()); ++q) {
+                auto [it, fresh] = shells.try_emplace(find(q));
+                if (fresh) B.MakeShell(it->second);
+                B.Add(it->second, built[q]);
+            }
+            TopoDS_Compound comp;
+            B.MakeCompound(comp);
+            for (auto& [_, sh] : shells) {
+                if (!BRepCheck_Analyzer(sh).IsValid()) return Result::fail("export", "an open shell failed B-rep validation");
+                B.Add(comp, sh);
+            }
+            if (shells.size() > 1) r.warn("the surface is in " + std::to_string(shells.size()) + " separate patches");
+            shape = comp;
         }
 
         STEPControl_Writer w;

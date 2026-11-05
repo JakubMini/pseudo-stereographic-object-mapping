@@ -459,7 +459,7 @@ RepairReport repair(Mesh& m, const Plane& plane, const RepairParams& p) {
     }
     if (rep.holes_open)
         rep.warnings.push_back(std::to_string(rep.holes_open) + " open hole(s), total rim " + mm(rep.open_perimeter) +
-                               ": those surfaces were not seen and are left open");
+                               ": those surfaces were not seen or not measurable (low texture, poor light or too few views) and are left open");
 
     // 3. decimate to the face budget, keeping the topology it had
     // (also runs when only a few zero-area faces from the fills need collapsing)
