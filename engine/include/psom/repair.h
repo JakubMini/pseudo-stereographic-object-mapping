@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -26,6 +27,7 @@ struct RepairParams {
     size_t face_budget = 20000;
     double max_decimation_error = 0.0003;  // metres a collapse may move the surface
     double min_component_fraction = 0.02;
+    std::function<void(double)> progress;  // 0..1 through decimation, the slow part
 };
 
 struct RepairReport {

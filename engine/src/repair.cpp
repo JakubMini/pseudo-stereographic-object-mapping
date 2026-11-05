@@ -59,7 +59,7 @@ int drop_small_components(Mesh& m, double fraction) {
 // Quadric edge collapse (Garland-Heckbert). A collapse happens only if the edge's endpoints share
 // exactly two neighbours (the link condition, which keeps a manifold manifold), no face flips or
 // degenerates, and the quadric error stays under max_err. Boundary vertices never move.
-size_t decimate(Mesh& m, size_t target, double max_err) {
+size_t decimate(Mesh& m, size_t target, double max_err, const std::function<void(double)>& progress) {
     const size_t nv = m.v.size();
     struct Quad {
         double q[10] = {};
@@ -144,7 +144,10 @@ size_t decimate(Mesh& m, size_t target, double max_err) {
 
     size_t alive = m.f.size();
     const double max_cost = max_err * max_err;
+    const size_t start_faces = alive;
+    size_t steps = 0;
     while (alive > target && !heap.empty()) {
+        if (progress && ++steps % 4096 == 0) progress(double(start_faces - alive) / double(start_faces - target));
         const Cand c = heap.top();
         heap.pop();
         if (c.cost > max_cost) break;
@@ -330,11 +333,15 @@ bool fill_loop(Mesh& m, const std::vector<int>& loop, const cv::Vec3d& n_in, dou
         return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
     };
     const double eps = 1e-14;
-    // a diagonal that already is an edge of the mesh would be shared by three faces
+    // a diagonal that already is an edge of the mesh would be shared by three faces; only edges
+    // between this loop's vertices can be diagonals, so only those are collected
     std::unordered_map<uint64_t, int> edges;
     auto ek = [](int a, int b) { return ekey(uint32_t(std::min(a, b)), uint32_t(std::max(a, b))); };
+    std::vector<char> on_loop(m.v.size(), 0);
+    for (int v : loop) on_loop[v] = 1;
     for (auto& f : m.f)
-        for (int k = 0; k < 3; ++k) edges[ek(f[k], f[(k + 1) % 3])] = 1;
+        for (int k = 0; k < 3; ++k)
+            if (on_loop[f[k]] && on_loop[f[(k + 1) % 3]]) edges[ek(f[k], f[(k + 1) % 3])] = 1;
     std::vector<int> idx(N);
     std::iota(idx.begin(), idx.end(), 0);
     std::vector<cv::Vec3i> tris;
@@ -466,7 +473,7 @@ RepairReport repair(Mesh& m, const Plane& plane, const RepairParams& p) {
     const Topology before = validate(m);
     if (m.f.size() > p.face_budget || before.degenerate_faces) {
         Mesh cand = m;
-        decimate(cand, std::min(p.face_budget, m.f.size() - 2 * before.degenerate_faces), p.max_decimation_error);
+        decimate(cand, std::min(p.face_budget, m.f.size() - 2 * before.degenerate_faces), p.max_decimation_error, p.progress);
         const Topology after = validate(cand);
         // accepted when nothing got worse
         const bool kept = (after.closed_valid || !before.closed_valid) && after.degenerate_faces <= before.degenerate_faces &&

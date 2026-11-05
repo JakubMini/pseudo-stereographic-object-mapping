@@ -423,6 +423,7 @@ Result reconstruct(const fs::path& project, const Options& o, const Progress& pr
     rp.plane_max = kCropFloor + 0.004;
     rp.max_hole_perimeter = std::max(0.03, 10 * voxel);
     rp.face_budget = o.face_budget;
+    rp.progress = [&](double f) { P("repair", f); };
     const RepairReport rr = repair(mesh, plane, rp);
     for (auto& w : rr.warnings) res.warn(w);
     if (mesh.f.empty()) return failed(Result::fail("repair", "nothing was left after removing fragments"));
