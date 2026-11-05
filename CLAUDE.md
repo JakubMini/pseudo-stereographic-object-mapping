@@ -55,6 +55,8 @@ agreement as Jakub's other projects, adapted to an Android app and a C++ engine.
   - `src/synth.cpp`: renders synthetic sessions for tests.
   - `cli/main.cpp`: `psom synth | reconstruct | export | evaluate`.
   - `test/`: GoogleTest unit and end-to-end tests.
+  - `scripts/`: Android deps build, FreeCAD STEP check, real-session fetch and evaluation
+    (`docs/real-sessions.md`).
 - `android/` (Kotlin, Compose, ARCore, NDK): `scan/` capture, `gl/` rendering, `engine/` JNI bridge,
   `ui/` screens. `app/src/main/cpp/` builds the engine into `libpsom.so`.
 

@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   engine:
     runs-on: macos-15
@@ -18,6 +22,12 @@ jobs:
           cmake --build engine/build
       - name: Test
         run: ctest --test-dir engine/build --output-on-failure -j3
+      - name: Real-device sessions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          engine/scripts/fetch-real-sessions.sh
+          python3 engine/scripts/evaluate_real.py
 
   android:
     runs-on: ubuntu-24.04
