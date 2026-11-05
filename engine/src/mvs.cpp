@@ -273,7 +273,9 @@ void consistency_filter(std::vector<DepthMap>& maps, const std::vector<cv::Matx4
                     const cv::Vec4d Xb4 = Tij[q] * cv::Vec4d(Xb[0], Xb[1], Xb[2], 1);
                     if (Xb4[2] <= 0.01) continue;
                     const cv::Vec2d back = m.K.project({Xb4[0], Xb4[1], Xb4[2]});
-                    if (cv::norm(back - cv::Vec2d(x, y)) > p.consist_px) continue;
+                    // rounding to a coarser neighbour's pixel grid moves the point by up to half its pixel
+                    const double tol = p.consist_px * std::max(1.0, double(m.K.w) / n.K.w);
+                    if (cv::norm(back - cv::Vec2d(x, y)) > tol) continue;
                     ++agree;
                 }
                 if (agree < p.min_consistent) m.d[px] = m.sigma[px] = 0.f;
