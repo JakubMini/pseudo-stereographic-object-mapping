@@ -37,6 +37,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -63,7 +64,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
@@ -91,10 +94,12 @@ import kotlin.math.sqrt
 fun App(vm: AppViewModel, capture: ArCapture) {
     val screen by vm.screen.collectAsState()
     MaterialTheme {
-        when (val s = screen) {
-            Screen.Projects -> ProjectsScreen(vm)
-            Screen.Scan -> ScanScreen(vm, capture)
-            is Screen.Project -> ProjectScreen(vm, s.dir)
+        Surface(Modifier.fillMaxSize()) {
+            when (val s = screen) {
+                Screen.Projects -> ProjectsScreen(vm)
+                Screen.Scan -> ScanScreen(vm, capture)
+                is Screen.Project -> ProjectScreen(vm, s.dir)
+            }
         }
     }
 }
@@ -377,12 +382,16 @@ private fun Review(vm: AppViewModel, dir: File, version: Int, exported: Boolean,
             text = {
                 Column {
                     Text("Between the two points the scan measures %.1f mm. What is the real distance?".format(scanned))
-                    OutlinedTextField(text, { text = it }, label = { Text("mm") }, singleLine = true)
+                    OutlinedTextField(
+                        text, { text = it }, label = { Text("mm") }, singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    )
                 }
             },
             confirmButton = {
-                TextButton(onClick = {
-                    text.toDoubleOrNull()?.let { vm.setScale(dir, a, b, it) }
+                val mm = text.replace(',', '.').toDoubleOrNull()?.takeIf { it > 0 }
+                TextButton(enabled = mm != null, onClick = {
+                    mm?.let { vm.setScale(dir, a, b, it) }
                     askDistance = false
                     tool = Tool.ORBIT
                 }) { Text("Set") }

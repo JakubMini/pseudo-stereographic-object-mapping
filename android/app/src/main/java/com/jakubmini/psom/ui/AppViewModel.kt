@@ -132,7 +132,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (d <= 0 || knownMm <= 0) return
         // the mesh is in ARCore metres; factor maps them onto the known distance
         Projects.setScale(dir, a, b, knownMm, knownMm / (d * 1000))
+        // a STEP written at the old scale is now wrong: remove it and go back to review
+        File(dir, "recon/model.step").delete()
+        Projects.update(dir) { put("status", kotlinx.serialization.json.JsonPrimitive("reconstructed")) }
+        machine = ScanStateMachine(ScanState(Phase.REVIEW))
+        state.value = machine.state
         reconVersion.value++
+        refresh()
     }
 
     fun delete(p: ProjectInfo) {
