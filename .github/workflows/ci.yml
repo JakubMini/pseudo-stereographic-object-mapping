@@ -1,0 +1,20 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  engine:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: brew install cmake ninja opencv opencascade
+      - name: Build
+        run: |
+          cmake -S engine -B engine/build -G Ninja
+          cmake --build engine/build
+      - name: Test
+        run: ctest --test-dir engine/build --output-on-failure -j3
