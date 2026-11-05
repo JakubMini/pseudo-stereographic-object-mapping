@@ -64,6 +64,7 @@ struct Session {
     std::map<std::string, int> rejected;  // keyframes the app rejected, by reason
     int depth_dropped_skew = 0;
     int frames_dropped = 0;
+    int tracking_jumps = 0;  // times the pose jumped faster than a hand moves
 
     std::filesystem::path image_path(const Frame& f) const;
     std::filesystem::path depth_path(const Frame& f) const;

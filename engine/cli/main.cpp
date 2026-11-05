@@ -19,7 +19,7 @@ int usage() {
                  "usage:\n"
                  "  psom synth <project> [--shape box|cylinder] [--dims L,W,H] [--no-depth] [--low-texture]\n"
                  "             [--tracking-loss] [--interrupted] [--frames N] [--pose-noise MM] [--seed N]\n"
-                 "  psom reconstruct <project> [--force-mvs] [--mem-mb N] [--faces N] [--mvs-width PX] [--mvs-window PX]\n"
+                 "  psom reconstruct <project> [--force-mvs] [--mem-mb N] [--faces N] [--mvs-width PX] [--mvs-window PX] [--verbose]\n"
                  "  psom export <project>\n"
                  "  psom evaluate <project> <truth.json>\n");
     return 2;
@@ -71,6 +71,7 @@ int main(int argc, char** argv) {
     if (cmd == "reconstruct") {
         psom::Options o;
         o.force_mvs = flag("--force-mvs");
+        o.verbose = flag("--verbose");
         if (auto v = value("--mem-mb")) o.mem_mb = size_t(std::atoll(v));
         if (auto v = value("--faces")) o.face_budget = size_t(std::atoll(v));
         if (auto v = value("--mvs-width")) o.mvs.width = std::atoi(v);

@@ -146,3 +146,23 @@ TEST(Session, LateDepthIsKeptWithItsOwnPose) {
     EXPECT_FALSE(s.frames[4].has_depth);
     EXPECT_EQ(s.depth_dropped_skew, 1);
 }
+
+TEST(Session, KeepsTheLongestStretchWhenTrackingJumps) {
+    psom::SynthSpec sp = small();
+    sp.frames = 12;
+    const fs::path p = synth_copy("twelve", sp, "jump");
+    auto lines = read_lines(p / "session" / "frames.jsonl");
+    for (size_t k = 3; k < lines.size(); ++k) {  // from frame 3 on, ARCore "drifts" 2 m away
+        json l = json::parse(lines[k]);
+        l["pose"][3] = l["pose"][3].get<double>() + 2.0;
+        lines[k] = l.dump();
+    }
+    write_lines(p / "session" / "frames.jsonl", lines);
+    psom::Session s;
+    const psom::Result r = psom::load_session(p / "session", s);
+    ASSERT_TRUE(r.ok) << r.error;
+    EXPECT_EQ(s.frames.size(), 9u);
+    EXPECT_EQ(s.frames.front().i, 3);
+    EXPECT_EQ(s.tracking_jumps, 1);
+    EXPECT_TRUE(has_warning(r, "lost track"));
+}

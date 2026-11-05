@@ -215,7 +215,7 @@ Result load_session(const fs::path& dir, Session& s) {
                 lost_at = t;
                 lost_reason = e.value("reason", std::string("unknown"));
             } else if (kind == "tracking_resumed" && lost_at >= 0) {
-                s.tracking_loss.push_back({lost_at, t, lost_reason});
+                if (t - lost_at >= 200'000'000) s.tracking_loss.push_back({lost_at, t, lost_reason});  // not single-frame blips
                 lost_at = -1;
             } else if (kind == "capture_end") {
                 s.capture_ended = true;
@@ -228,18 +228,47 @@ Result load_session(const fs::path& dir, Session& s) {
     if (lost_at >= 0) s.tracking_loss.push_back({lost_at, s.frames.empty() ? lost_at : s.frames.back().t_ns, lost_reason});
     if (!s.capture_ended) r.warn("capture was interrupted (no capture_end); using the frames that were saved");
 
+    // ARCore can lose track and drift away: a camera "moving" faster than a person carries a phone
+    // means the poses after that point no longer fit the ones before. Keep the longest steady stretch.
+    constexpr double kMaxSpeed = 0.5;  // m/s; scanning around something on a table is well below this
+    size_t best_from = 0, best_len = 0, from = 0, jumps = 0;
+    for (size_t k = 0; k <= s.frames.size(); ++k) {
+        bool cut = k == s.frames.size();
+        if (!cut && k > 0) {
+            const double dt = (s.frames[k].t_ns - s.frames[k - 1].t_ns) * 1e-9;
+            const double d = cv::norm(s.frames[k].center() - s.frames[k - 1].center());
+            cut = d > kMaxSpeed * std::max(dt, 0.05);
+            jumps += cut;
+        }
+        if (cut) {
+            if (k - from > best_len) best_from = from, best_len = k - from;
+            from = k;
+        }
+    }
+    int64_t keep_t0 = INT64_MIN, keep_t1 = INT64_MAX;
+    if (jumps) {
+        const size_t total = s.frames.size();
+        s.frames = std::vector<Frame>(s.frames.begin() + best_from, s.frames.begin() + best_from + best_len);
+        if (!s.frames.empty()) keep_t0 = s.frames.front().t_ns, keep_t1 = s.frames.back().t_ns;
+        s.tracking_jumps = int(jumps);
+        r.warn("ARCore lost track " + std::to_string(jumps) + " time(s) and the camera position jumped; kept the longest steady stretch, " +
+               std::to_string(s.frames.size()) + " of " + std::to_string(total) + " frames");
+    }
+
     std::ifstream pc(dir / "points.csv");
     std::string row;
     while (std::getline(pc, row)) {
         long long t, id;
         double x, y, z, c;
         if (std::sscanf(row.c_str(), "%lld,%lld,%lf,%lf,%lf,%lf", &t, &id, &x, &y, &z, &c) != 6) continue;
+        if (t < keep_t0 || t > keep_t1) continue;  // seen while tracking was elsewhere
         if (std::isfinite(x) && std::isfinite(y) && std::isfinite(z)) s.points.push_back({{x, y, z}, c});
     }
 
     if (s.frames.size() < 3)
-        return Result::fail("load", "Only " + std::to_string(s.frames.size()) + " usable frame" + (s.frames.size() == 1 ? "" : "s") +
-                                        ". At least 3 are needed.");
+        return Result::fail("load", s.tracking_jumps
+            ? std::string("ARCore lost track of where the phone was, so the frames don't line up. Scan again, slower, with more of the room in view.")
+            : "Only " + std::to_string(s.frames.size()) + " usable frame" + (s.frames.size() == 1 ? "" : "s") + ". At least 3 are needed.");
     r.ok = true;
     return r;
 }

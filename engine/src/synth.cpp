@@ -155,7 +155,7 @@ Result synth_project(const fs::path& project, const SynthSpec& sp) {
     int pid = 0;
     std::string last_line;
     for (int i = 0; i < sp.frames; ++i) {
-        const int64_t t = 1'000'000'000 + int64_t(i) * 333'333'333;
+        const int64_t t = 1'000'000'000 + int64_t(i) * 1'000'000'000;
         if (sp.tracking_loss && i == gap0)
             events << json{{"t_ns", t}, {"event", "tracking_lost"}, {"reason", "EXCESSIVE_MOTION"}}.dump() << "\n";
         if (sp.tracking_loss && i == gap1) events << json{{"t_ns", t}, {"event", "tracking_resumed"}}.dump() << "\n";
@@ -246,7 +246,7 @@ Result synth_project(const fs::path& project, const SynthSpec& sp) {
             frames << last_line << "\n";
     }
     if (!sp.interrupted)
-        events << json{{"t_ns", 1'000'000'000 + int64_t(sp.frames) * 333'333'333},
+        events << json{{"t_ns", 1'000'000'000 + int64_t(sp.frames) * 1'000'000'000},
                        {"event", "capture_end"},
                        {"rejected", {{"blur", 0}, {"motion", 0}, {"tracking", 0}, {"rate", 0}}}}
                       .dump()

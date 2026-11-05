@@ -8,7 +8,7 @@ import kotlin.math.sqrt
 /** Camera pose: translation in metres and a unit quaternion (x, y, z, w). */
 data class Pose(val tx: Double, val ty: Double, val tz: Double, val qx: Double, val qy: Double, val qz: Double, val qw: Double)
 
-enum class Verdict(val key: String) { ACCEPTED("accepted"), TRACKING("tracking"), STILL("motion"), BLUR("blur"), RATE("rate") }
+enum class Verdict(val key: String) { ACCEPTED("accepted"), TRACKING("tracking"), STILL("motion"), BLUR("blur"), RATE("rate"), JUMP("jump") }
 
 /**
  * Keeps a frame when tracking is good, the camera moved enough since the last keyframe, the image
@@ -19,12 +19,17 @@ class KeyframeSelector(
     private val minRotationDeg: Double = 5.0,
     private val sharpFactor: Double = 0.6,
     private val maxRateHz: Double = 3.0,
+    /** Faster than a hand moves: ARCore has lost track and the pose jumped. */
+    private val maxSpeed: Double = 0.5,
 ) {
     private var last: Pose? = null
     private var lastT = Long.MIN_VALUE
     private val recent = ArrayDeque<Double>()
     val rejected = mutableMapOf<String, Int>()
     var accepted = 0
+        private set
+    /** When the current run of jumps began, or -1. */
+    var jumpingSince = -1L
         private set
 
     /** Cheap checks first, so the caller only computes sharpness for frames that could be kept. */
@@ -34,6 +39,9 @@ class KeyframeSelector(
         if (l != null) {
             if (moved(l, pose) < minTranslation && turned(l, pose) < minRotationDeg) return Verdict.STILL
             if ((tNs - lastT) < 1e9 / maxRateHz) return Verdict.RATE
+            val speed = moved(l, pose) / ((tNs - lastT) / 1e9)
+            // a second of jumps: ARCore has settled somewhere new, so start a new steady stretch there
+            if (speed > maxSpeed && (jumpingSince < 0 || tNs - jumpingSince < 1_000_000_000L)) return Verdict.JUMP
         }
         return Verdict.ACCEPTED
     }
@@ -44,6 +52,11 @@ class KeyframeSelector(
         if (v == Verdict.ACCEPTED || v == Verdict.BLUR) {
             recent.addLast(sharpness)
             if (recent.size > 30) recent.removeFirst()
+        }
+        if (v == Verdict.JUMP) {
+            if (jumpingSince < 0) jumpingSince = tNs
+        } else if (v == Verdict.ACCEPTED) {
+            jumpingSince = -1
         }
         if (v == Verdict.ACCEPTED) {
             last = pose

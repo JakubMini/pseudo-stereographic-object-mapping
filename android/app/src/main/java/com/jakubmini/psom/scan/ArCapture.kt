@@ -15,13 +15,12 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
-import com.google.ar.core.CameraConfig
-import com.google.ar.core.CameraConfigFilter
 import com.google.ar.core.Config
 import com.google.ar.core.Frame
 import com.google.ar.core.Plane
 import com.google.ar.core.Point
 import com.google.ar.core.Session
+import com.google.ar.core.TrackingFailureReason
 import com.google.ar.core.TrackingState
 import com.google.ar.core.exceptions.NotYetAvailableException
 import com.jakubmini.psom.gl.BackgroundRenderer
@@ -49,6 +48,8 @@ class ArCapture(private val activity: Activity, private val root: File) : GLSurf
         val scanning: Boolean = false,
         val keyframes: Int = 0,
         val elapsedMs: Long = 0,
+        /** ARCore's pose jumped: it lost track of where the phone is. */
+        val jumping: Boolean = false,
         val coverage: List<Boolean> = List(36) { false },
         val depth: Boolean = false,
         val error: String? = null,
@@ -86,15 +87,15 @@ class ArCapture(private val activity: Activity, private val root: File) : GLSurf
     private var scanStartT = 0L
     private val inFlight = java.util.concurrent.atomic.AtomicBoolean(false)
     private val recentPoses = ArrayDeque<Pair<Long, DoubleArray>>()
+    private var notTrackingSince = -1L
+    private var lastReason = "NONE"
 
     /** Opens the camera. Returns an error to show, or null. */
     fun resume(): String? {
         try {
             val s = session ?: Session(activity).also { s ->
-                // the largest CPU image the camera can deliver at 30 fps; a slower mode would drag the preview
-                val filter = CameraConfigFilter(s).setTargetFps(java.util.EnumSet.of(CameraConfig.TargetFps.TARGET_FPS_30))
-                val configs = s.getSupportedCameraConfigs(filter).ifEmpty { s.getSupportedCameraConfigs(CameraConfigFilter(s)) }
-                configs.maxByOrNull { it.imageSize.width * it.imageSize.height }?.let { s.cameraConfig = it }
+                // ARCore's own default camera setup: its best-tested path for tracking. A larger CPU image
+                // stream made tracking break down on a mid-range phone, and the engine works at 640 px anyway.
                 val c = Config(s)
                 depthMode = s.isDepthModeSupported(Config.DepthMode.RAW_DEPTH_ONLY)
                 if (depthMode) c.depthMode = Config.DepthMode.RAW_DEPTH_ONLY
@@ -168,7 +169,12 @@ class ArCapture(private val activity: Activity, private val root: File) : GLSurf
         background.draw(frame)
         val cam = frame.camera
         val tracking = cam.trackingState == TrackingState.TRACKING
-        val reason = if (tracking) null else cam.trackingFailureReason.name
+        // ARCore can report a one-frame pause while still tracking fine: only a pause lasting
+        // 150 ms counts as lost, for the banner and the log. Keyframes still need `tracking`.
+        if (tracking) notTrackingSince = -1L else if (notTrackingSince < 0) notTrackingSince = frame.timestamp
+        val lost = !tracking && frame.timestamp - notTrackingSince >= 150_000_000L
+        if (!tracking && cam.trackingFailureReason != TrackingFailureReason.NONE) lastReason = cam.trackingFailureReason.name
+        val reason = if (lost) lastReason else null
         lastT = frame.timestamp
         if (scanning) {
             // remembered so late raw depth can be paired with the frame it was measured from
@@ -186,11 +192,12 @@ class ArCapture(private val activity: Activity, private val root: File) : GLSurf
             stopRequested = false
             finishScan(frame.timestamp)
         }
-        if (scanning) scanFrame(frame, tracking, reason)
+        if (scanning) scanFrame(frame, tracking, lost, reason)
 
-        if (++frameCount % 5 == 0 || ui.value.tracking != tracking)
+        val jumping = scanning && selector.jumpingSince >= 0
+        if (++frameCount % 5 == 0 || ui.value.tracking != !lost || ui.value.jumping != jumping)
             ui.value = ui.value.copy(
-                tracking = tracking, reason = reason, scanning = scanning,
+                tracking = !lost, reason = reason, scanning = scanning, jumping = jumping,
                 keyframes = selector.accepted, coverage = synchronized(coverage) { coverage.bins.toList() },
                 elapsedMs = if (scanning) (frame.timestamp - scanStartT) / 1_000_000 else 0,
             )
@@ -229,13 +236,13 @@ class ArCapture(private val activity: Activity, private val root: File) : GLSurf
         scanning = true
     }
 
-    private fun scanFrame(frame: Frame, tracking: Boolean, reason: String?) {
+    private fun scanFrame(frame: Frame, tracking: Boolean, lost: Boolean, reason: String?) {
         val w = writer ?: return
         val t = frame.timestamp
-        if (tracking != wasTracking) {
-            val extra = if (!tracking) buildJsonObject { put("reason", reason) } else null
-            writerThread.execute { w.event(t, if (tracking) "tracking_resumed" else "tracking_lost", extra) }
-            wasTracking = tracking
+        if (!lost != wasTracking) {
+            val extra = if (lost) buildJsonObject { put("reason", reason ?: "NONE") } else null
+            writerThread.execute { w.event(t, if (lost) "tracking_lost" else "tracking_resumed", extra) }
+            wasTracking = !lost
         }
         val cam = frame.camera
         val p = cam.pose

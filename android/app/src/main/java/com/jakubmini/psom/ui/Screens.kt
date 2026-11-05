@@ -384,9 +384,10 @@ fun ScanScreen(vm: AppViewModel, capture: ArCapture) {
     val low = bins.subList(0, 12).count { it }
     val mid = bins.subList(12, 24).count { it }
     val top = bins.subList(24, 36).count { it }
-    val lost = ui.scanning && !ui.tracking
+    val lost = ui.scanning && (!ui.tracking || ui.jumping)
     val hint = when {
         !ui.scanning -> "Hold and walk around it"
+        ui.jumping -> "Hold still and point at the room for a moment"
         lost -> "Slow down and point back at it"
         low < 9 -> "Keep going round"
         mid < 6 -> "Now a little higher"
@@ -416,7 +417,7 @@ fun ScanScreen(vm: AppViewModel, capture: ArCapture) {
                 }
             } else if (lost) {
                 Pill(Modifier.align(Alignment.Center), Palette.Mustard) {
-                    Text(trackingReason(ui.reason), style = Type.SmallStrong, color = Palette.Ink)
+                    Text(if (ui.jumping) "Lost track" else trackingReason(ui.reason), style = Type.SmallStrong, color = Palette.Ink)
                 }
             } else {
                 Pill(Modifier.align(Alignment.Center), Color.White.copy(alpha = 0.14f)) {

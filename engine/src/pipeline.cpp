@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <ctime>
 #include <fstream>
 
@@ -167,6 +168,10 @@ Result reconstruct(const fs::path& project, const Options& o, const Progress& pr
     Result lr = load_session(project / "session", s);
     if (!lr.ok) return failed(lr);
     res.absorb(lr);
+    if (o.verbose) {
+        const cv::Vec3d c = scene_center(s);
+        std::fprintf(stderr, "{\"event\":\"scene\",\"frames\":%zu,\"points\":%zu,\"centre\":[%.3f,%.3f,%.3f]}\n", s.frames.size(), s.points.size(), c[0], c[1], c[2]);
+    }
 
     // 2. depth: raw where valid, MVS elsewhere; cached as a whole
     P("depth", 0);
@@ -224,9 +229,15 @@ Result reconstruct(const fs::path& project, const Options& o, const Progress& pr
                     if (!views[j].gray.empty()) nv.push_back(&views[j]), nbrs[i].push_back(j);
                 const auto [near, far] = depth_range(s, s.frames[i], center);
                 maps[i] = plane_sweep(views[i], nv, near, far, o.mvs);
+                if (o.verbose)
+                    std::fprintf(stderr, "{\"event\":\"mvs\",\"frame\":%d,\"neighbours\":%zu,\"near\":%.3f,\"far\":%.3f,\"valid\":%zu}\n",
+                                 s.frames[i].i, nv.size(), near, far, maps[i].valid());
             }
             for (size_t i = 0; i < n; ++i) poses[i] = pose_for(s.frames[i], maps[i]);
             consistency_filter(maps, poses, nbrs, o.mvs);
+            if (o.verbose)
+                for (size_t i : need)
+                    std::fprintf(stderr, "{\"event\":\"consistent\",\"frame\":%d,\"valid\":%zu}\n", s.frames[i].i, maps[i].valid());
         }
         for (size_t i = 0; i < n; ++i) {
             if (maps[i].empty()) maps[i].resize(s.frames[i].K.scaled(1, 1));  // placeholder: no depth
@@ -274,6 +285,31 @@ Result reconstruct(const fs::path& project, const Options& o, const Progress& pr
     if (ar.ok) res.absorb(ar);
     const double diag = 2 * cv::norm(box.half);
     if (diag > 2.0) return failed(Result::fail("isolate", "the crop box is larger than 2 m"));
+
+    // viewing directions covered, around the crop box
+    int covered = 0;
+    bool top = false;
+    {
+        bool bins[3][12] = {};
+        const cv::Vec3d ax(box.axes(0, 0), box.axes(0, 1), box.axes(0, 2)), ay(box.axes(1, 0), box.axes(1, 1), box.axes(1, 2)),
+            az(box.axes(2, 0), box.axes(2, 1), box.axes(2, 2));
+        for (auto& f : s.frames) {
+            const cv::Vec3d d = cv::normalize(f.center() - box.center);
+            const double el = std::asin(std::clamp(d.dot(az), -1.0, 1.0)) * 180 / CV_PI;
+            if (el < 0) continue;
+            double a = std::atan2(d.dot(ay), d.dot(ax)) * 180 / CV_PI;
+            if (a < 0) a += 360;
+            bins[std::min(2, int(el / 30))][std::min(11, int(a / 30))] = true;
+        }
+        for (int e = 0; e < 3; ++e)
+            for (int a = 0; a < 12; ++a) covered += bins[e][a], top |= e == 2 && bins[e][a];
+        if (covered < 22) res.warn("only " + std::to_string(covered) + " of 36 viewing directions were covered; move further around the object");
+    }
+    // Too little of the object seen to say anything about its shape: fail plainly rather than
+    // hand over a model that is mostly guesswork.
+    if (covered < 6)
+        return failed(Result::fail("isolate", "Only " + std::to_string(covered) +
+                                                  " of 36 directions around the object were seen. Walk further around it."));
 
     // 4. fusion within the memory budget
     P("fusion", 0);
@@ -334,24 +370,6 @@ Result reconstruct(const fs::path& project, const Options& o, const Progress& pr
     }
 
     // 6. report
-    int covered = 0;
-    bool top = false;
-    {
-        bool bins[3][12] = {};
-        const cv::Vec3d ax(box.axes(0, 0), box.axes(0, 1), box.axes(0, 2)), ay(box.axes(1, 0), box.axes(1, 1), box.axes(1, 2)),
-            az(box.axes(2, 0), box.axes(2, 1), box.axes(2, 2));
-        for (auto& f : s.frames) {
-            const cv::Vec3d d = cv::normalize(f.center() - box.center);
-            const double el = std::asin(std::clamp(d.dot(az), -1.0, 1.0)) * 180 / CV_PI;
-            if (el < 0) continue;
-            double a = std::atan2(d.dot(ay), d.dot(ax)) * 180 / CV_PI;
-            if (a < 0) a += 360;
-            bins[std::min(2, int(el / 30))][std::min(11, int(a / 30))] = true;
-        }
-        for (int e = 0; e < 3; ++e)
-            for (int a = 0; a < 12; ++a) covered += bins[e][a], top |= e == 2 && bins[e][a];
-        if (covered < 22) res.warn("only " + std::to_string(covered) + " of 36 viewing directions were covered; move further around the object");
-    }
     if (!s.tracking_loss.empty())
         res.warn("tracking was lost " + std::to_string(s.tracking_loss.size()) + " time(s) (" + s.tracking_loss[0].reason +
                  "): there are no frames from those moments");
