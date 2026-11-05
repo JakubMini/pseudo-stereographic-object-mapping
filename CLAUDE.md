@@ -7,6 +7,8 @@ agreement as Jakub's other projects, adapted to an Android app and a C++ engine.
 
 - **Never commit to main.** Every piece of work, however small, gets its own branch cut from an
   up-to-date main and lands through a pull request.
+  - Exception, asked for by Jakub on 2026-11-05: the initial build is pushed straight to main in
+    small commits. The PR rule applies again once the MVP has been verified on a phone.
 - Branch names say what the branch is for: `feat/<thing>`, `fix/<thing>`, `chore/<thing>`, `docs/<thing>`, `test/<thing>`.
 - Start every task with: `git switch main && git pull --ff-only && git switch -c <branch>`.
 - One PR, one purpose. Commit subjects are imperative and under 72 characters.
@@ -39,13 +41,15 @@ agreement as Jakub's other projects, adapted to an Android app and a C++ engine.
 
 ## Where things live
 
-- `engine/` (C++20, CMake; OpenCV, Open CASCADE, nlohmann/json, meshoptimizer):
+- `engine/` (C++20, CMake; OpenCV core/imgproc/imgcodecs only (4.x and 5.x), Open CASCADE, nlohmann/json):
   - `src/session.cpp`: loads and validates a session; the only place the GL→CV pose conversion happens.
   - `src/depth.cpp`: raw-depth frames → metric depth + σ; the `recon/depth` cache.
   - `src/mvs.cpp`: plane-sweep multi-view stereo, consistency checks, uncertainty.
   - `src/isolate.cpp`: support plane, region of interest, crop box.
   - `src/tsdf.cpp`: sparse voxel-block TSDF with the memory budget; marching cubes.
-  - `src/repair.cpp`: welding, caps, small-hole fill, decimation, topology validation.
+  - `src/mesh.cpp`: the mesh type and its PLY file.
+  - `src/repair.cpp`: fragments, the base cap, small-hole fill, quadric decimation that keeps the
+    mesh manifold (link condition), topology validation.
   - `src/step.cpp`: faceted B-rep, sewing, STEP write and read-back.
   - `src/pipeline.cpp`: the stages in order, the report and `project.json`.
   - `src/synth.cpp`: renders synthetic sessions for tests.
