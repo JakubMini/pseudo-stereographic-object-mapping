@@ -18,3 +18,28 @@ jobs:
           cmake --build engine/build
       - name: Test
         run: ctest --test-dir engine/build --output-on-failure -j3
+
+  android:
+    runs-on: ubuntu-24.04
+    env:
+      ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/27.1.12297006
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: SDK packages
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.1.12297006" "cmake;3.22.1" "platforms;android-35" > /dev/null
+      - name: Cache Android deps (Open CASCADE, OpenCV)
+        uses: actions/cache@v4
+        with:
+          path: third_party/android
+          key: android-deps-${{ hashFiles('engine/scripts/build-android-deps.sh') }}
+      - name: Android deps
+        run: |
+          sudo apt-get install -y ninja-build > /dev/null
+          engine/scripts/build-android-deps.sh
+      - name: Unit tests and APK
+        working-directory: android
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug
