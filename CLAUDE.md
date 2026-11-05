@@ -35,14 +35,18 @@ agreement as Jakub's other projects, adapted to an Android app and a C++ engine.
   read back and checked before it replaces the old one; `project.json` status moves only on `ok`.
 - **Confidence channels stay separate:** observation weight, view diversity, geometric
   uncertainty. Never call any of them "accuracy".
+- **A photo scan has no size until calibrated.** Its dimensions are a guess and export refuses
+  until the user sets the scale; never show them as millimetres before that.
 - **Respect the memory budget.** The TSDF counts every block it allocates and fails cleanly when the
   budget runs out.
 - `docs/session-format.md` is the contract. Change it and the loader, the writer and the tests together.
 
 ## Where things live
 
-- `engine/` (C++20, CMake; OpenCV core/imgproc/imgcodecs only (4.x and 5.x), Open CASCADE, nlohmann/json):
+- `engine/` (C++20, CMake; OpenCV 4.x or 5.x (5 renamed features2d/calib3d to features/geometry), Open CASCADE, nlohmann/json):
   - `src/session.cpp`: loads and validates a session; the only place the GL→CV pose conversion happens.
+  - `src/sfm.cpp`: camera poses from photos (features, matching, placement, bundle adjustment), then
+    levelled with gravity and given a working scale. Cached in `recon/sfm.json`.
   - `src/depth.cpp`: raw-depth frames → metric depth + σ; the `recon/depth` cache.
   - `src/mvs.cpp`: plane-sweep multi-view stereo, consistency checks, uncertainty.
   - `src/isolate.cpp`: support plane, region of interest, crop box.
@@ -53,11 +57,11 @@ agreement as Jakub's other projects, adapted to an Android app and a C++ engine.
   - `src/step.cpp`: faceted B-rep with exactly shared edges, STEP write and read-back.
   - `src/pipeline.cpp`: the stages in order, the report and `project.json`.
   - `src/synth.cpp`: renders synthetic sessions for tests.
-  - `cli/main.cpp`: `psom synth | reconstruct | export | evaluate`.
+  - `cli/main.cpp`: `psom synth | reconstruct | poses | export | evaluate`.
   - `test/`: GoogleTest unit and end-to-end tests.
   - `scripts/`: Android deps build, FreeCAD STEP check, real-session fetch and evaluation
     (`docs/real-sessions.md`).
-- `android/` (Kotlin, Compose, ARCore, NDK): `scan/` capture, `gl/` rendering, `engine/` JNI bridge,
+- `android/` (Kotlin, Compose, CameraX, NDK): `scan/` capture, `gl/` rendering, `engine/` JNI bridge,
   `ui/` screens. `app/src/main/cpp/` builds the engine into `libpsom.so`.
 
 ## Setup

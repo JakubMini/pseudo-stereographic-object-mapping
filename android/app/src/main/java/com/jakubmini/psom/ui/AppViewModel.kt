@@ -137,7 +137,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun setScale(dir: File, a: DoubleArray, b: DoubleArray, knownMm: Double) {
         val d = Math.sqrt((0..2).sumOf { (a[it] - b[it]) * (a[it] - b[it]) })
         if (d <= 0 || knownMm <= 0) return
-        // the mesh is in ARCore metres; factor maps them onto the known distance
+        // the mesh is in working metres (a guess for photo scans); factor maps them onto the known distance
         Projects.setScale(dir, a, b, knownMm, knownMm / (d * 1000))
         // a STEP written at the old scale is now wrong: remove it and go back to review
         File(dir, "recon/model.step").delete()

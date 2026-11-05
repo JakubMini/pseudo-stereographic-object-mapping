@@ -13,9 +13,9 @@ android {
         applicationId = "com.jakubmini.psom"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.1.5"
-        ndk { abiFilters += "arm64-v8a" }  // ARCore phones; the emulator ABI is not built
+        versionCode = 7
+        versionName = "0.2.0"
+        ndk { abiFilters += "arm64-v8a" }  // phones; the emulator ABI is not built
         externalNativeBuild { cmake { arguments += listOf("-DANDROID_STL=c++_shared") } }
     }
 
@@ -47,7 +47,11 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
-    implementation("com.google.ar:core:1.57.0")
+    val camerax = "1.4.1"
+    implementation("androidx.camera:camera-core:$camerax")
+    implementation("androidx.camera:camera-camera2:$camerax")
+    implementation("androidx.camera:camera-lifecycle:$camerax")
+    implementation("androidx.camera:camera-view:$camerax")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 

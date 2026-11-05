@@ -17,6 +17,7 @@ can be deleted and rebuilt at any time.
     depth/000000.png …  (only if raw depth was available for that frame)
     conf/000000.png  …
   recon/                derived
+    sfm.json            photo scans: poses, refined focal length, scene points
     depth/000000.bin …  cached per-keyframe depth + uncertainty
     mesh.ply
     report.json
@@ -26,6 +27,11 @@ can be deleted and rebuilt at any time.
 ## Conventions
 
 - **World:** ARCore world, metres, +Y up. The engine uses the same world.
+- **Photo scans** (what the app records now) declare `"pose": "none"`: frames carry no pose and no
+  tracking state. The engine works the poses out from the photos and keeps them in `recon/sfm.json`,
+  levelled with each frame's `gravity` (the phone's gravity sensor, device axes: x right, y up, z out
+  of the screen, m/s², pointing up). `K` is then a starting guess (`camera.intrinsics: "guess"`) that
+  the engine refines; `"calibrated"` keeps it fixed. Sessions recorded with ARCore keep working.
 - **Pose:** `T_world_cam`, row-major 4×4, in ARCore's camera convention (OpenGL: +X right, +Y up,
   looking down −Z), declared as `"pose": "arcore_gl_world_from_camera"`. The engine converts to the
   vision convention (+X right, +Y down, +Z forward) in one place, `T_cv = T_gl · diag(1,−1,−1,1)`.
@@ -58,6 +64,9 @@ can be deleted and rebuilt at any time.
 }
 ```
 
+A photo scan writes `"conventions": {"pose": "none", ...}`, `"camera": {..., "intrinsics": "guess"}`,
+`"depth": {"supported": false}` and no `clocks` or `target`.
+
 `target` is the world point of a hit test at the screen centre when the scan started, or `null`. It is a hint only.
 
 ## `frames.jsonl`
@@ -74,6 +83,8 @@ Raw depth is produced at a lower rate than camera frames, so the newest depth im
 belongs to a frame or two earlier. The app then adds `"depth_pose"`: the pose (same convention)
 of the camera frame the depth was computed for, and the engine uses that pose for the depth. Without
 `depth_pose`, depth more than `depth.max_skew_ns` away from the frame is dropped.
+
+A photo scan's line: `{"i":0,"t_ns":…,"K":[1300,1300,799.5,599.5],"sharpness":182.5,"depth":false,"gravity":[0.1,9.7,1.2]}`.
 
 `i` is the file stem (`frames/000000.jpg`). `t_ns` strictly increases. `pose` has a finite, orthonormal
 rotation. The principal point lies inside the image.

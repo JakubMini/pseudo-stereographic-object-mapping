@@ -24,8 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
-import com.google.ar.core.ArCoreApk
-import com.jakubmini.psom.scan.ArCapture
+import com.jakubmini.psom.scan.CameraCapture
 import com.jakubmini.psom.ui.App
 import com.jakubmini.psom.ui.AppViewModel
 import com.jakubmini.psom.ui.Palette
@@ -38,9 +37,8 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val vm: AppViewModel by viewModels()
-    private lateinit var capture: ArCapture
+    private lateinit var capture: CameraCapture
     private val blocker = mutableStateOf<String?>(null)
-    private var installRequested = false
 
     private val askCamera = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (!granted) blocker.value = "Scanning needs the camera."
@@ -50,7 +48,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge(statusBarStyle = SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT))
-        capture = ArCapture(this, vm.root)
+        capture = CameraCapture(this, vm.root)
         // Saved scans stay usable without a camera: the checks run only when the scanner opens.
         lifecycleScope.launch { vm.screen.collect { if (it == Screen.Scan) check() } }
         setContent {
@@ -75,25 +73,9 @@ class MainActivity : ComponentActivity() {
         if (vm.screen.value == Screen.Scan) check()
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        if (isFinishing) capture.close()
-    }
-
-    /** Camera permission, then ARCore installed and up to date. */
+    /** The camera permission. */
     private fun check() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)
             askCamera.launch(Manifest.permission.CAMERA)
-            return
-        }
-        try {
-            when (ArCoreApk.getInstance().requestInstall(this, !installRequested)) {
-                ArCoreApk.InstallStatus.INSTALL_REQUESTED -> installRequested = true
-                ArCoreApk.InstallStatus.INSTALLED -> {}
-                else -> {}
-            }
-        } catch (e: Exception) {
-            blocker.value = "Scanning needs Google Play Services for AR."
-        }
     }
 }

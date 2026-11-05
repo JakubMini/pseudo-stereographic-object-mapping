@@ -80,6 +80,9 @@ object Projects {
     fun scaleFactor(project: File): Double =
         (read(project)["scale"] as? JsonObject)?.get("factor")?.jsonPrimitive?.doubleOrNull ?: 1.0
 
+    fun scaleSet(project: File): Boolean =
+        ((read(project)["scale"] as? JsonObject)?.get("known_mm") as? JsonPrimitive)?.let { !it.isString && it.content != "null" } == true
+
     fun setScale(project: File, a: DoubleArray, b: DoubleArray, knownMm: Double, factor: Double) = update(project) {
         put("scale", buildJsonObject {
             put("factor", factor)

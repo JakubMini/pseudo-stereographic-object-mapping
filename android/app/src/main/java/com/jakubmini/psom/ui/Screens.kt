@@ -4,7 +4,6 @@ import android.content.Intent
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.net.Uri
-import android.opengl.GLSurfaceView
 import android.text.format.DateUtils
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -97,7 +96,8 @@ import com.jakubmini.psom.gl.Crop
 import com.jakubmini.psom.gl.MeshData
 import com.jakubmini.psom.gl.MeshView
 import com.jakubmini.psom.gl.Tool
-import com.jakubmini.psom.scan.ArCapture
+import androidx.camera.view.PreviewView
+import com.jakubmini.psom.scan.CameraCapture
 import com.jakubmini.psom.scan.Phase
 import com.jakubmini.psom.scan.ProjectInfo
 import com.jakubmini.psom.scan.Projects
@@ -119,7 +119,7 @@ private val Warn = Color(0xFF9A4A00)  // warning text on cream (mustard itself i
 private val Paper = Color(0xFFFFFBF3) // raised surfaces: the sheet, the selected segment
 
 @Composable
-fun App(vm: AppViewModel, capture: ArCapture) {
+fun App(vm: AppViewModel, capture: CameraCapture) {
     val screen by vm.screen.collectAsState()
     PsomTheme {
         Box(Modifier.fillMaxSize().background(Palette.Cream)) {
@@ -238,13 +238,17 @@ private fun summary(dir: File): Summary = try {
     val r = Json.parseToJsonElement(File(dir, "recon/report.json").readText()).jsonObject
     val d = r["dimensions_mm"] as JsonObject
     val f = Projects.scaleFactor(dir) / d["scale_factor"]!!.jsonPrimitive.double
-    val dims = "%.1f × %.1f × %.1f mm".format(
+    val dims = if (!scaleKnown(r, dir)) "Size not set" else "%.1f × %.1f × %.1f mm".format(
         d["length"]!!.jsonPrimitive.double * f, d["width"]!!.jsonPrimitive.double * f, d["height"]!!.jsonPrimitive.double * f,
     )
     Summary(dims, (r["topology"] as JsonObject)["closed_valid"]!!.jsonPrimitive.boolean, File(dir, "recon/model.step").exists())
 } catch (e: Exception) {
     Summary(null, null, false)
 }
+
+/** A photo scan's size is a guess until the user calibrates it. */
+private fun scaleKnown(report: JsonObject?, dir: File): Boolean =
+    (report?.get("dimensions_mm") as? JsonObject)?.get("scale_known")?.jsonPrimitive?.boolean != false || Projects.scaleSet(dir)
 
 private fun dateTitle(id: String): String {
     val t = try { SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).parse(id)?.time } catch (e: Exception) { null } ?: return id
@@ -281,7 +285,7 @@ fun ProjectsScreen(vm: AppViewModel) {
                     Thumb(p)
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(dateTitle(p.id), style = Type.Body, color = Palette.Ink)
-                        Text(s.dims ?: "${p.keyframes} frames", style = if (s.dims != null) Type.SmallMono else Type.Small, color = Palette.Ink2)
+                        Text(s.dims ?: "${p.keyframes} photos", style = if (s.dims != null) Type.SmallMono else Type.Small, color = Palette.Ink2)
                         val (filled, color, label) = when {
                             p.error != null && p.status == "captured" -> Triple(false, Palette.Mustard, "Needs another try")
                             s.solid == true -> Triple(true, Palette.Sea, if (s.exported) "Solid · exported" else "Solid")
@@ -347,35 +351,22 @@ private fun Thumb(p: ProjectInfo) {
 // ---------- scanner ----------
 
 @Composable
-fun ScanScreen(vm: AppViewModel, capture: ArCapture) {
+fun ScanScreen(vm: AppViewModel, capture: CameraCapture) {
     val ui by capture.ui.collectAsState()
     val ctx = LocalContext.current
     val owner = LocalLifecycleOwner.current
-    var error by remember { mutableStateOf<String?>(null) }
-    val glView = remember {
-        GLSurfaceView(ctx).apply {
-            preserveEGLContextOnPause = true
-            setEGLContextClientVersion(3)
-            setEGLConfigChooser(8, 8, 8, 8, 16, 0)
-            setRenderer(capture)
-            renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
-        }
-    }
+    val preview = remember { PreviewView(ctx) }
     DisposableEffect(owner) {
         capture.onFinished = { dir -> vm.captured(dir) }
+        // bound again on every resume: the first try may come before the camera permission
         val obs = LifecycleEventObserver { _, e ->
-            when (e) {
-                Lifecycle.Event.ON_RESUME -> { error = capture.resume(); glView.onResume() }
-                Lifecycle.Event.ON_PAUSE -> { glView.onPause(); capture.pause() }
-                else -> {}
-            }
+            if (e == Lifecycle.Event.ON_RESUME) capture.bind(owner, preview)
+            if (e == Lifecycle.Event.ON_PAUSE) capture.pause()
         }
         owner.lifecycle.addObserver(obs)
-        if (owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) { error = capture.resume(); glView.onResume() }
         onDispose {
             owner.lifecycle.removeObserver(obs)
-            glView.onPause()
-            capture.pause()
+            capture.unbind()
         }
     }
     BackHandler { vm.openProjects() }
@@ -384,11 +375,9 @@ fun ScanScreen(vm: AppViewModel, capture: ArCapture) {
     val low = bins.subList(0, 12).count { it }
     val mid = bins.subList(12, 24).count { it }
     val top = bins.subList(24, 36).count { it }
-    val lost = ui.scanning && (!ui.tracking || ui.jumping)
     val hint = when {
         !ui.scanning -> "Hold and walk around it"
-        ui.jumping -> "Hold still and point at the room for a moment"
-        lost -> "Slow down and point back at it"
+        ui.fast -> "Slow down"
         low < 9 -> "Keep going round"
         mid < 6 -> "Now a little higher"
         top < 3 -> "Now a few from above"
@@ -396,7 +385,7 @@ fun ScanScreen(vm: AppViewModel, capture: ArCapture) {
     }
 
     Box(Modifier.fillMaxSize().background(Palette.Night)) {
-        AndroidView({ glView }, Modifier.fillMaxSize())
+        AndroidView({ preview }, Modifier.fillMaxSize())
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to Color(0x66000000), 0.25f to Color.Transparent, 0.7f to Color.Transparent, 1f to Color(0x99000000))))
 
         Box(Modifier.fillMaxWidth().statusBarsPadding().padding(16.dp)) {
@@ -411,23 +400,15 @@ fun ScanScreen(vm: AppViewModel, capture: ArCapture) {
                         drawLine(Color.White, Offset(size.width, 0f), Offset(0f, size.height), 1.8.dp.toPx(), StrokeCap.Round)
                     }
                 }
-                Pill(Modifier.align(Alignment.CenterEnd), Color.White.copy(alpha = 0.14f)) {
-                    Dot(ui.depth, if (ui.depth) Palette.Sea else Color.White)
-                    Text(if (ui.depth) "Depth sensor" else "Images only", style = Type.Small, color = Color.White)
-                }
-            } else if (lost) {
-                Pill(Modifier.align(Alignment.Center), Palette.Mustard) {
-                    Text(if (ui.jumping) "Lost track" else trackingReason(ui.reason), style = Type.SmallStrong, color = Palette.Ink)
-                }
             } else {
                 Pill(Modifier.align(Alignment.Center), Color.White.copy(alpha = 0.14f)) {
                     Canvas(Modifier.size(8.dp)) { drawCircle(Palette.Terracotta) }
                     val sec = ui.elapsedMs / 1000
-                    Text("${ui.keyframes} frames · %d:%02d".format(sec / 60, sec % 60), style = Type.SmallMono, color = Color.White)
+                    Text("${ui.keyframes} photos · %d:%02d".format(sec / 60, sec % 60), style = Type.SmallMono, color = Color.White)
                 }
             }
         }
-        (error ?: ui.error)?.let {
+        ui.error?.let {
             Text(it, style = Type.Body, color = Palette.Ink, modifier = Modifier.align(Alignment.Center).padding(24.dp)
                 .clip(RoundedCornerShape(16.dp)).background(Palette.Cream).padding(16.dp))
         }
@@ -438,20 +419,12 @@ fun ScanScreen(vm: AppViewModel, capture: ArCapture) {
         ) {
             Text(hint, style = Type.Body, color = Color.White.copy(alpha = 0.9f), textAlign = TextAlign.Center)
             Shutter(
-                bins = bins, scanning = ui.scanning, lost = lost,
+                bins = bins, scanning = ui.scanning, lost = ui.fast,
                 onPress = { if (vm.pressed()) capture.startScan() },
                 onRelease = { if (vm.released()) capture.stopScan() },
             )
         }
     }
-}
-
-private fun trackingReason(r: String?) = when (r) {
-    "INSUFFICIENT_LIGHT" -> "Too dark"
-    "EXCESSIVE_MOTION" -> "Moving too fast"
-    "INSUFFICIENT_FEATURES" -> "Not enough detail in view"
-    "CAMERA_UNAVAILABLE" -> "Camera unavailable"
-    else -> "Tracking lost"
 }
 
 @Composable
@@ -533,7 +506,8 @@ private fun BuildingScreen(vm: AppViewModel, dir: File) {
     val progress by vm.progress.collectAsState()
     val frames = remember(dir) { Projects.info(dir).keyframes }
     val steps = listOf(
-        "Depth from $frames frames" to setOf("", "load", "depth"),
+        "Placing $frames photos" to setOf("", "load", "poses"),
+        "Depth" to setOf("depth"),
         "Finding the object" to setOf("isolate"),
         "Fusing the surfaces" to setOf("fusion"),
         "Closing and checking" to setOf("mesh", "repair", "report", "done"),
@@ -587,6 +561,7 @@ private fun BuildingScreen(vm: AppViewModel, dir: File) {
 
 private fun stageName(s: String?) = when (s) {
     "load" -> "Reading the scan"
+    "poses" -> "Placing the photos"
     "depth" -> "Depth"
     "isolate" -> "Finding the object"
     "fusion" -> "Fusing"
@@ -622,7 +597,7 @@ private fun FailedScreen(vm: AppViewModel, dir: File, stage: String?, error: Str
             Hairline()
             FactRow("Stopped at", stageName(stage))
             Hairline()
-            FactRow("Your scan", "Saved, $frames frames")
+            FactRow("Your scan", "Saved, $frames photos")
             Hairline()
             if (notes.isNotEmpty()) {
                 Text(
@@ -665,6 +640,7 @@ private fun ReviewScreen(vm: AppViewModel, dir: File, exported: Boolean, error: 
     var cropEdited by remember(version) { mutableStateOf(false) }
     val picks = remember(version) { mutableStateListOf<DoubleArray>() }
     val factor = remember(version) { Projects.scaleFactor(dir) }
+    val scaleKnown = remember(version) { scaleKnown(report, dir) }
     var menu by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -714,14 +690,20 @@ private fun ReviewScreen(vm: AppViewModel, dir: File, exported: Boolean, error: 
         Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 24.dp).navigationBarsPadding()) {
             when (tool) {
                 Tool.ORBIT -> {
-                    InspectPanel(report, factor, color, { color = it }, { tool = Tool.MEASURE; picks.clear() })
+                    InspectPanel(report, factor, scaleKnown, color, { color = it }, { tool = Tool.MEASURE; picks.clear() })
                     Spacer(Modifier.weight(1f))
                     error?.let { Text(it, style = Type.Small, color = Warn, modifier = Modifier.padding(bottom = 8.dp)) }
                     val step = File(dir, "recon/model.step")
                     PrimaryButton(
-                        when { exporting -> "Exporting…"; exported && step.exists() -> "Share STEP"; else -> "Export STEP" },
+                        when { exporting -> "Exporting…"; !scaleKnown -> "Set the scale"; exported && step.exists() -> "Share STEP"; else -> "Export STEP" },
                         Modifier.fillMaxWidth().padding(bottom = 24.dp), enabled = !exporting,
-                    ) { if (exported && step.exists()) vm.openSheet() else vm.export(dir) }
+                    ) {
+                        when {
+                            !scaleKnown -> { tool = Tool.MEASURE; picks.clear() }
+                            exported && step.exists() -> vm.openSheet()
+                            else -> vm.export(dir)
+                        }
+                    }
                 }
                 Tool.CROP -> CropPanel(cropEdited, onApply = { crop?.let { vm.setCrop(dir, it.toJson()) } }, onAuto = { vm.setCrop(dir, null) })
                 Tool.MEASURE -> ScalePanel(picks, factor, onSet = { a, b, mm -> vm.setScale(dir, a, b, mm); tool = Tool.ORBIT }, onAgain = { picks.clear() })
@@ -740,10 +722,11 @@ private fun ReviewScreen(vm: AppViewModel, dir: File, exported: Boolean, error: 
 }
 
 @Composable
-private fun ColumnScope.InspectPanel(report: JsonObject?, factor: Double, color: ColorMode, onColor: (ColorMode) -> Unit, onCalibrate: () -> Unit) {
+private fun ColumnScope.InspectPanel(report: JsonObject?, factor: Double, scaleKnown: Boolean, color: ColorMode, onColor: (ColorMode) -> Unit, onCalibrate: () -> Unit) {
     val d = report?.get("dimensions_mm") as? JsonObject
     val atRun = d?.get("scale_factor")?.jsonPrimitive?.double ?: 1.0
     fun v(k: String) = (d?.get(k)?.jsonPrimitive?.double ?: 0.0) / atRun * factor
+    val scaled = scaleKnown
     val closed = (report?.get("topology") as? JsonObject)?.get("closed_valid")?.jsonPrimitive?.boolean == true
     val notes = (report?.get("warnings") as? JsonArray)?.map { it.jsonPrimitive.content } ?: emptyList()
     var showNotes by remember { mutableStateOf(false) }
@@ -753,13 +736,13 @@ private fun ColumnScope.InspectPanel(report: JsonObject?, factor: Double, color:
         for ((label, key) in listOf("Length" to "length", "Width" to "width", "Height" to "height"))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(label, style = Type.Small, color = Palette.Ink2)
-                Text("%.1f".format(v(key)), style = Type.Number, color = Palette.Ink)
+                Text(if (scaled) "%.1f".format(v(key)) else "–", style = Type.Number, color = if (scaled) Palette.Ink else Palette.Ink2)
             }
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(if (factor == 1.0) "mm · ARCore scale" else "mm · calibrated ×%.4f".format(factor), style = Type.Small, color = Palette.Ink2)
+        Text(if (scaled) "mm · calibrated" else "Size not set", style = Type.Small, color = Palette.Ink2)
         Spacer(Modifier.width(8.dp))
-        Text("Calibrate", style = Type.SmallStrong, color = Palette.Ink, modifier = Modifier.clickable(role = Role.Button, onClick = onCalibrate).padding(vertical = 12.dp))
+        Text(if (scaled) "Recalibrate" else "Set the scale", style = Type.SmallStrong, color = Palette.Ink, modifier = Modifier.clickable(role = Role.Button, onClick = onCalibrate).padding(vertical = 12.dp))
     }
     Hairline()
     Row(Modifier.padding(top = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {

@@ -116,3 +116,11 @@ Out of scope for the MVP: Mode B, custom SLAM, cloud processing, live incrementa
 - [ ] Faceted STEP exports and opens in FreeCAD
 - [ ] Scan projects can be reopened after closing the app
 - [ ] All of the above on a real phone, with measured errors published
+
+## Decision, 2026-11-05: poses from the photos, not ARCore
+
+On the Galaxy A56, ARCore lost track within seconds in every scan, and Google's own Hello AR sample
+did the same. Jakub chose to drop ARCore and work the poses out from the photos after capture
+(structure from motion, in the engine). This is not live SLAM: nothing tracks while scanning, so the
+"no custom SLAM" line above still holds. Photos carry no size, so the two-point calibration is now
+required before export.

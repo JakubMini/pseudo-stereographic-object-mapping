@@ -1,68 +1,54 @@
 package com.jakubmini.psom.scan
 
-import kotlin.math.abs
 import kotlin.math.acos
 import kotlin.math.min
 import kotlin.math.sqrt
 
-/** Camera pose: translation in metres and a unit quaternion (x, y, z, w). */
-data class Pose(val tx: Double, val ty: Double, val tz: Double, val qx: Double, val qy: Double, val qz: Double, val qw: Double)
-
-enum class Verdict(val key: String) { ACCEPTED("accepted"), TRACKING("tracking"), STILL("motion"), BLUR("blur"), RATE("rate"), JUMP("jump") }
+enum class Verdict(val key: String) { ACCEPTED("accepted"), STILL("still"), BLUR("blur"), RATE("rate"), FAST("motion"), FULL("limit") }
 
 /**
- * Keeps a frame when tracking is good, the camera moved enough since the last keyframe, the image
- * is sharp compared with the recent ones, and the rate stays under [maxRateHz].
+ * Keeps a photo when the view has turned enough since the last one (or a while has passed), the
+ * phone isn't turning so fast that it blurs, the image is sharp compared with the recent ones, and
+ * the rate stays under [maxRateHz]. Without tracking there are no positions, only directions.
  */
 class KeyframeSelector(
-    private val minTranslation: Double = 0.02,
-    private val minRotationDeg: Double = 5.0,
+    private val minTurnDeg: Double = 4.0,
+    private val maxWaitNs: Long = 1_500_000_000L,
     private val sharpFactor: Double = 0.6,
     private val maxRateHz: Double = 3.0,
-    /** Faster than a hand moves: ARCore has lost track and the pose jumped. */
-    private val maxSpeed: Double = 0.5,
+    private val maxTurnRate: Double = 1.0,
+    val maxFrames: Int = 120,
 ) {
-    private var last: Pose? = null
+    private var lastDir: DoubleArray? = null
     private var lastT = Long.MIN_VALUE
     private val recent = ArrayDeque<Double>()
     val rejected = mutableMapOf<String, Int>()
     var accepted = 0
         private set
-    /** When the current run of jumps began, or -1. */
-    var jumpingSince = -1L
-        private set
 
-    /** Cheap checks first, so the caller only computes sharpness for frames that could be kept. */
-    fun wouldConsider(tNs: Long, tracking: Boolean, pose: Pose): Verdict {
-        if (!tracking) return Verdict.TRACKING
-        val l = last
-        if (l != null) {
-            if (moved(l, pose) < minTranslation && turned(l, pose) < minRotationDeg) return Verdict.STILL
-            if ((tNs - lastT) < 1e9 / maxRateHz) return Verdict.RATE
-            val speed = moved(l, pose) / ((tNs - lastT) / 1e9)
-            // a second of jumps: ARCore has settled somewhere new, so start a new steady stretch there
-            if (speed > maxSpeed && (jumpingSince < 0 || tNs - jumpingSince < 1_000_000_000L)) return Verdict.JUMP
-        }
+    /** Cheap checks first, so the caller only copies and measures photos that could be kept. */
+    fun wouldConsider(tNs: Long, dir: DoubleArray?, turnRate: Double): Verdict {
+        if (accepted >= maxFrames) return Verdict.FULL
+        if (turnRate > maxTurnRate) return Verdict.FAST
+        if (accepted == 0) return Verdict.ACCEPTED
+        if (tNs - lastT < 1e9 / maxRateHz) return Verdict.RATE
+        val l = lastDir
+        if (l != null && dir != null && angleDeg(l, dir) < minTurnDeg && tNs - lastT < maxWaitNs) return Verdict.STILL
         return Verdict.ACCEPTED
     }
 
-    fun offer(tNs: Long, tracking: Boolean, pose: Pose, sharpness: Double): Verdict {
-        var v = wouldConsider(tNs, tracking, pose)
+    fun offer(tNs: Long, dir: DoubleArray?, turnRate: Double, sharpness: Double): Verdict {
+        var v = wouldConsider(tNs, dir, turnRate)
         if (v == Verdict.ACCEPTED && recent.size >= 5 && sharpness < median() * sharpFactor) v = Verdict.BLUR
         if (v == Verdict.ACCEPTED || v == Verdict.BLUR) {
             recent.addLast(sharpness)
             if (recent.size > 30) recent.removeFirst()
         }
-        if (v == Verdict.JUMP) {
-            if (jumpingSince < 0) jumpingSince = tNs
-        } else if (v == Verdict.ACCEPTED) {
-            jumpingSince = -1
-        }
         if (v == Verdict.ACCEPTED) {
-            last = pose
+            lastDir = dir
             lastT = tNs
             accepted++
-        } else if (v != Verdict.STILL) {
+        } else if (v != Verdict.STILL && v != Verdict.RATE) {
             rejected[v.key] = (rejected[v.key] ?: 0) + 1
         }
         return v
@@ -71,16 +57,11 @@ class KeyframeSelector(
     private fun median(): Double = recent.sorted()[recent.size / 2]
 
     companion object {
-        fun moved(a: Pose, b: Pose): Double {
-            val dx = a.tx - b.tx
-            val dy = a.ty - b.ty
-            val dz = a.tz - b.tz
-            return sqrt(dx * dx + dy * dy + dz * dz)
-        }
-
-        fun turned(a: Pose, b: Pose): Double {
-            val dot = abs(a.qx * b.qx + a.qy * b.qy + a.qz * b.qz + a.qw * b.qw)
-            return Math.toDegrees(2 * acos(min(1.0, dot)))
+        fun angleDeg(a: DoubleArray, b: DoubleArray): Double {
+            val na = sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2])
+            val nb = sqrt(b[0] * b[0] + b[1] * b[1] + b[2] * b[2])
+            val c = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / (na * nb)
+            return Math.toDegrees(acos(min(1.0, maxOf(-1.0, c))))
         }
 
         /** Variance of the 4-neighbour Laplacian of a luma plane, sampled every [step] pixels. */

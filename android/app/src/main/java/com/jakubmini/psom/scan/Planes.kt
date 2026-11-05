@@ -26,15 +26,3 @@ class YuvPlanes(
         return out
     }
 }
-
-/** One plane of a depth or confidence image, bulk-copied with its strides. */
-class DepthPlane(val width: Int, val height: Int, val bytes: ByteArray, val row: Int, val pix: Int) {
-    /** 16-bit little-endian samples (ARCore raw depth, millimetres). */
-    fun shorts(): ShortArray = ShortArray(width * height) { i ->
-        val k = (i / width) * row + (i % width) * pix
-        ((bytes[k].toInt() and 0xFF) or (bytes[k + 1].toInt() shl 8)).toShort()
-    }
-
-    /** 8-bit samples (confidence). */
-    fun bytes(): ByteArray = ByteArray(width * height) { i -> bytes[(i / width) * row + (i % width) * pix] }
-}
