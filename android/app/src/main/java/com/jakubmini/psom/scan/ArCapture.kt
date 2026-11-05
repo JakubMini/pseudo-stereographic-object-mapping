@@ -15,6 +15,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
+import com.google.ar.core.CameraConfig
 import com.google.ar.core.CameraConfigFilter
 import com.google.ar.core.Config
 import com.google.ar.core.Frame
@@ -83,13 +84,15 @@ class ArCapture(private val activity: Activity, private val root: File) : GLSurf
     private var frameCount = 0
     private var lastT = 0L
     private var scanStartT = 0L
+    private val inFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /** Opens the camera. Returns an error to show, or null. */
     fun resume(): String? {
         try {
             val s = session ?: Session(activity).also { s ->
-                // the largest CPU image: more pixels for multi-view stereo
-                val configs = s.getSupportedCameraConfigs(CameraConfigFilter(s))
+                // the largest CPU image the camera can deliver at 30 fps; a slower mode would drag the preview
+                val filter = CameraConfigFilter(s).setTargetFps(java.util.EnumSet.of(CameraConfig.TargetFps.TARGET_FPS_30))
+                val configs = s.getSupportedCameraConfigs(filter).ifEmpty { s.getSupportedCameraConfigs(CameraConfigFilter(s)) }
                 configs.maxByOrNull { it.imageSize.width * it.imageSize.height }?.let { s.cameraConfig = it }
                 val c = Config(s)
                 depthMode = s.isDepthModeSupported(Config.DepthMode.RAW_DEPTH_ONLY)
@@ -180,7 +183,7 @@ class ArCapture(private val activity: Activity, private val root: File) : GLSurf
         if (++frameCount % 5 == 0 || ui.value.tracking != tracking)
             ui.value = ui.value.copy(
                 tracking = tracking, reason = reason, scanning = scanning,
-                keyframes = selector.accepted, coverage = coverage.bins.toList(),
+                keyframes = selector.accepted, coverage = synchronized(coverage) { coverage.bins.toList() },
                 elapsedMs = if (scanning) (frame.timestamp - scanStartT) / 1_000_000 else 0,
             )
     }
@@ -190,9 +193,12 @@ class ArCapture(private val activity: Activity, private val root: File) : GLSurf
         val dir = File(root, id)
         project = dir
         selector = KeyframeSelector()
-        coverage.clear()
-        axes = AxesConvergence()
-        cameraCentres.clear()
+        inFlight.set(false)
+        synchronized(coverage) {
+            coverage.clear()
+            axes = AxesConvergence()
+            cameraCentres.clear()
+        }
         metaWritten = false
         wasTracking = true
         // An optional hint: whatever is under the screen centre when the scan starts.
@@ -225,84 +231,99 @@ class ArCapture(private val activity: Activity, private val root: File) : GLSurf
         val cam = frame.camera
         val p = cam.pose
         val pose = Pose(p.tx().toDouble(), p.ty().toDouble(), p.tz().toDouble(), p.qx().toDouble(), p.qy().toDouble(), p.qz().toDouble(), p.qw().toDouble())
-        if (selector.wouldConsider(t, tracking, pose) != Verdict.ACCEPTED) {
-            selector.offer(t, tracking, pose, 0.0)  // counts tracking and rate rejections
+        // One keyframe in flight at a time; until it is written, frames just render.
+        if (inFlight.get()) return
+        val verdict = synchronized(selector) { selector.wouldConsider(t, tracking, pose) }
+        if (verdict != Verdict.ACCEPTED) {
+            synchronized(selector) { selector.offer(t, tracking, pose, 0.0) }  // counts tracking and rate rejections
             return
         }
-        val image = try {
-            frame.acquireCameraImage()
+        val intr = cam.imageIntrinsics
+        val dims = intr.imageDimensions
+        // On the camera thread only bulk copies happen (a few ms); everything slow runs on the
+        // writer thread, so the preview never stops.
+        val planes = try {
+            frame.acquireCameraImage().use { img ->
+                if (dims[0] != img.width || dims[1] != img.height) {
+                    Log.w(TAG, "intrinsics are for ${dims[0]}x${dims[1]}, image is ${img.width}x${img.height}; frame skipped")
+                    return
+                }
+                val (yp, up, vp) = img.planes
+                YuvPlanes(
+                    img.width, img.height,
+                    copy(yp.buffer), yp.rowStride,
+                    copy(up.buffer), up.rowStride, up.pixelStride,
+                    copy(vp.buffer), vp.rowStride, vp.pixelStride,
+                )
+            }
         } catch (e: NotYetAvailableException) {
             return
         }
-        image.use { img ->
-            val y = img.planes[0]
-            val luma = ByteArray(y.buffer.remaining()).also { y.buffer.get(it) }
-            val sharp = KeyframeSelector.sharpness(luma, img.width, img.height, y.rowStride)
-            if (selector.offer(t, tracking, pose, sharp) != Verdict.ACCEPTED) return
-            val nv21 = nv21(img)
-            val intr = cam.imageIntrinsics
-            val dims = intr.imageDimensions
-            if (dims[0] != img.width || dims[1] != img.height) {
-                Log.w(TAG, "intrinsics are for ${dims[0]}x${dims[1]}, image is ${img.width}x${img.height}; frame skipped")
-                return
-            }
-            val k = doubleArrayOf(intr.focalLength[0].toDouble(), intr.focalLength[1].toDouble(), intr.principalPoint[0].toDouble(), intr.principalPoint[1].toDouble())
-            val m = FloatArray(16)
-            p.toMatrix(m, 0)  // column-major
-            val rowMajor = DoubleArray(16) { m[(it % 4) * 4 + it / 4].toDouble() }
-
-            var depth: ShortArray? = null
-            var conf: ByteArray? = null
-            var dw = 0
-            var dh = 0
-            var dt = 0L
-            if (depthMode) {
-                try {
-                    frame.acquireRawDepthImage16Bits().use { d ->
-                        frame.acquireRawDepthConfidenceImage().use { c ->
-                            dw = d.width
-                            dh = d.height
-                            dt = d.timestamp
-                            depth = shorts(d)
-                            conf = bytes(c)
-                        }
+        var depth: DepthPlane? = null
+        var conf: DepthPlane? = null
+        var dt = 0L
+        if (depthMode) {
+            try {
+                frame.acquireRawDepthImage16Bits().use { d ->
+                    frame.acquireRawDepthConfidenceImage().use { c ->
+                        dt = d.timestamp
+                        depth = DepthPlane(d.width, d.height, copy(d.planes[0].buffer), d.planes[0].rowStride, d.planes[0].pixelStride)
+                        conf = DepthPlane(c.width, c.height, copy(c.planes[0].buffer), c.planes[0].rowStride, c.planes[0].pixelStride)
                     }
-                } catch (e: NotYetAvailableException) {
-                    depth = null
                 }
+            } catch (e: NotYetAvailableException) {
+                depth = null
             }
-            val (pts, ids) = frame.acquirePointCloud().use { pc ->
-                val f = FloatArray(pc.points.remaining()).also { pc.points.get(it) }
-                val i = IntArray(pc.ids.remaining()).also { pc.ids.get(it) }
-                f to i
-            }
-            val width = img.width
-            val height = img.height
-            if (!metaWritten && (!depthMode || depth != null)) {
-                val meta = meta(frame, SystemClock.elapsedRealtimeNanos() - t, dw, dh)
-                writerThread.execute { w.meta(meta) }
-                metaWritten = true
-            }
-            val d = depth
-            val c = conf
-            val sized = metaWritten  // read here, on the GL thread
-            writerThread.execute {
+        }
+        val (pts, ids) = frame.acquirePointCloud().use { pc ->
+            val f = FloatArray(pc.points.remaining()).also { pc.points.get(it) }
+            val i = IntArray(pc.ids.remaining()).also { pc.ids.get(it) }
+            f to i
+        }
+        val k = doubleArrayOf(intr.focalLength[0].toDouble(), intr.focalLength[1].toDouble(), intr.principalPoint[0].toDouble(), intr.principalPoint[1].toDouble())
+        val m = FloatArray(16)
+        p.toMatrix(m, 0)  // column-major
+        val rowMajor = DoubleArray(16) { m[(it % 4) * 4 + it / 4].toDouble() }
+        val centre = doubleArrayOf(p.tx().toDouble(), p.ty().toDouble(), p.tz().toDouble())
+        val z = p.zAxis
+        val forward = doubleArrayOf(-z[0].toDouble(), -z[1].toDouble(), -z[2].toDouble())
+        val d = depth
+        val c = conf
+        if (!metaWritten && (!depthMode || d != null)) {
+            val meta = meta(frame, SystemClock.elapsedRealtimeNanos() - t, d?.width ?: 0, d?.height ?: 0)
+            writerThread.execute { w.meta(meta) }
+            metaWritten = true
+        }
+        val sized = metaWritten  // read here, on the camera thread
+        val sel = selector
+        inFlight.set(true)
+        writerThread.execute {
+            try {
+                val sharp = KeyframeSelector.sharpness(planes.y, planes.width, planes.height, planes.yRow)
+                if (synchronized(sel) { sel.offer(t, true, pose, sharp) } != Verdict.ACCEPTED) return@execute
                 val out = ByteArrayOutputStream()
-                YuvImage(nv21, ImageFormat.NV21, width, height, null).compressToJpeg(Rect(0, 0, width, height), 92, out)
-                // depth before metadata could carry its size is dropped rather than mislabelled
+                YuvImage(planes.nv21(), ImageFormat.NV21, planes.width, planes.height, null)
+                    .compressToJpeg(Rect(0, 0, planes.width, planes.height), 92, out)
+                // depth from before the metadata could carry its size is dropped rather than mislabelled
                 val keep = d != null && c != null && sized
-                w.keyframe(Keyframe(t, rowMajor, k, sharp, out.toByteArray(), if (keep) d else null, if (keep) c else null, dw, dh, dt, pts, ids))
-            }
-
-            // coverage around the hit-test point, or where the camera axes cross
-            val centre = doubleArrayOf(p.tx().toDouble(), p.ty().toDouble(), p.tz().toDouble())
-            val z = p.zAxis
-            axes.add(centre, doubleArrayOf(-z[0].toDouble(), -z[1].toDouble(), -z[2].toDouble()))
-            cameraCentres.add(centre)
-            val c0 = target ?: axes.center()
-            if (c0 != null) {
-                coverage.clear()
-                for (cc in cameraCentres) coverage.add(cc, c0)
+                w.keyframe(
+                    Keyframe(t, rowMajor, k, sharp, out.toByteArray(), if (keep) d!!.shorts() else null, if (keep) c!!.bytes() else null,
+                        d?.width ?: 0, d?.height ?: 0, dt, pts, ids),
+                )
+                // coverage around the hit-test point, or where the camera axes cross
+                synchronized(coverage) {
+                    axes.add(centre, forward)
+                    cameraCentres.add(centre)
+                    val c0 = target ?: axes.center()
+                    if (c0 != null) {
+                        coverage.clear()
+                        for (cc in cameraCentres) coverage.add(cc, c0)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "keyframe failed", e)
+            } finally {
+                inFlight.set(false)
             }
         }
     }
@@ -312,7 +333,7 @@ class ArCapture(private val activity: Activity, private val root: File) : GLSurf
         imu.stop()
         val w = writer ?: return
         val dir = project ?: return
-        val rejected = selector.rejected.toMap()
+        val rejected = synchronized(selector) { selector.rejected.toMap() }
         writer = null
         writerThread.execute {
             try {
@@ -358,42 +379,10 @@ class ArCapture(private val activity: Activity, private val root: File) : GLSurf
     companion object {
         private const val TAG = "psom"
 
-        /** YUV_420_888 to NV21 (Y, then interleaved V/U), honouring row and pixel strides. */
-        fun nv21(img: Image): ByteArray {
-            val w = img.width
-            val h = img.height
-            val out = ByteArray(w * h * 3 / 2)
-            val y = img.planes[0]
-            var o = 0
-            for (r in 0 until h) {
-                y.buffer.position(r * y.rowStride)
-                y.buffer.get(out, o, w)
-                o += w
-            }
-            val u = img.planes[1]
-            val v = img.planes[2]
-            for (r in 0 until h / 2) for (c in 0 until w / 2) {
-                out[o++] = v.buffer.get(r * v.rowStride + c * v.pixelStride)
-                out[o++] = u.buffer.get(r * u.rowStride + c * u.pixelStride)
-            }
-            return out
-        }
-
-        fun shorts(img: Image): ShortArray {
-            val p = img.planes[0]
-            val buf = p.buffer.order(java.nio.ByteOrder.nativeOrder())
-            val out = ShortArray(img.width * img.height)
-            for (r in 0 until img.height) for (c in 0 until img.width)
-                out[r * img.width + c] = buf.getShort(r * p.rowStride + c * p.pixelStride)
-            return out
-        }
-
-        fun bytes(img: Image): ByteArray {
-            val p = img.planes[0]
-            val out = ByteArray(img.width * img.height)
-            for (r in 0 until img.height) for (c in 0 until img.width)
-                out[r * img.width + c] = p.buffer.get(r * p.rowStride + c * p.pixelStride)
-            return out
+        /** One bulk copy of a plane's bytes (a memcpy, not a per-pixel loop). */
+        fun copy(b: java.nio.ByteBuffer): ByteArray {
+            b.rewind()
+            return ByteArray(b.remaining()).also { b.get(it) }
         }
     }
 }
