@@ -14,8 +14,11 @@ find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
 find_package(OpenCASCADE REQUIRED)
 
 include(FetchContent)
+if(POLICY CMP0135)  # extracted files get the extraction time (CMake 3.24+)
+  cmake_policy(SET CMP0135 NEW)
+endif()
 FetchContent_Declare(json URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
-  URL_HASH SHA256=d6c65aca6b1ed68e7a182f4757257b107ae403032760ed6ef121c9d55e81757d DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+  URL_HASH SHA256=d6c65aca6b1ed68e7a182f4757257b107ae403032760ed6ef121c9d55e81757d)
 FetchContent_MakeAvailable(json)
 
 add_library(psom_engine STATIC
@@ -35,7 +38,7 @@ endif()
 
 if(PSOM_BUILD_TESTS)
   enable_testing()
-  FetchContent_Declare(googletest URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.tar.gz DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+  FetchContent_Declare(googletest URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.tar.gz)
   set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(googletest)
   file(GLOB PSOM_TEST_SOURCES CONFIGURE_DEPENDS test/test_*.cpp)

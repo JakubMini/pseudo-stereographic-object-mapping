@@ -15,12 +15,13 @@ OCCT=7_9_3
 mkdir -p "$OUT/src"
 cd "$OUT/src"
 
-if [ ! -f "$OUT/opencv/jni/OpenCVConfig.cmake" ]; then
+# OpenCV's config finds its libraries relative to the SDK's own layout, so the tree is kept whole.
+if [ ! -f "$OUT/opencv/sdk/native/jni/OpenCVConfig.cmake" ]; then
   echo "== OpenCV $OPENCV for Android"
   curl -fsSL -o opencv.zip "https://github.com/opencv/opencv/releases/download/$OPENCV/opencv-$OPENCV-android-sdk.zip"
   rm -rf OpenCV-android-sdk && unzip -q opencv.zip
-  rm -rf "$OUT/opencv" && mv OpenCV-android-sdk/sdk/native "$OUT/opencv"
-  rm -rf OpenCV-android-sdk opencv.zip
+  rm -rf "$OUT/opencv" && mv OpenCV-android-sdk "$OUT/opencv"
+  rm -f opencv.zip
 fi
 
 if [ ! -f "$OUT/occt/lib/cmake/opencascade/OpenCASCADEConfig.cmake" ]; then
