@@ -111,9 +111,11 @@ std::vector<cv::Vec3d> depth_points(const Session& s, const std::vector<DepthMap
 }
 
 Plane find_support_plane(const std::vector<cv::Vec3d>& pts, const cv::Vec3d& center, double radius) {
+    // The support is the biggest horizontal plane with (almost) nothing measured below it. "Below the
+    // scene centre" isn't enough: cameras looking down converge below the table top.
     std::vector<cv::Vec3d> cand;
     for (auto& X : pts)
-        if (cv::norm(X - center) < radius && X[1] < center[1]) cand.push_back(X);  // world +y is up
+        if (cv::norm(X - center) < radius) cand.push_back(X);
     Plane best;
     if (cand.size() < 50) return best;
     std::mt19937 rng(7);
@@ -129,9 +131,13 @@ Plane find_support_plane(const std::vector<cv::Vec3d>& pts, const cv::Vec3d& cen
         if (n[1] < 0) n = -n;
         if (n[1] < cos_max) continue;  // not horizontal
         const double d = n.dot(a);
-        size_t cnt = 0;
-        for (auto& X : cand) cnt += std::abs(n.dot(X) - d) < kPlaneTol;
-        if (cnt > best_n) best_n = cnt, best.n = n, best.d = d;
+        size_t cnt = 0, below = 0;
+        for (auto& X : cand) {
+            const double h = n.dot(X) - d;
+            cnt += std::abs(h) < kPlaneTol;
+            below += h < -3 * kPlaneTol;
+        }
+        if (cnt > best_n && below < cand.size() / 10) best_n = cnt, best.n = n, best.d = d;
     }
     if (best_n < std::max<size_t>(50, cand.size() / 10)) return Plane{};
     // least-squares refit on the inliers

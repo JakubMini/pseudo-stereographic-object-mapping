@@ -38,7 +38,7 @@ cv::Vec3d scene_center(const Session& s);
 // World points from depth maps (every `step`th pixel) with sigma below max_sigma.
 std::vector<cv::Vec3d> depth_points(const Session& s, const std::vector<DepthMap>& maps, int step, double max_sigma);
 
-// RANSAC for a near-horizontal plane (world +y is up in ARCore) below the scene centre.
+// RANSAC for the largest near-horizontal plane (world +y is up) with almost nothing below it.
 Plane find_support_plane(const std::vector<cv::Vec3d>& pts, const cv::Vec3d& center, double radius);
 
 // Support plane plus the largest cluster above it near the scene centre.

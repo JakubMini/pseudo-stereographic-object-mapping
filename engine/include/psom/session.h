@@ -32,6 +32,9 @@ struct Frame {
     // Raw depth arrives a frame or two late; this is the pose of the camera frame it belongs to.
     cv::Matx44d T_wc_depth = cv::Matx44d::eye();
     bool depth_has_pose = false;
+    // Up, from the phone's gravity sensor, in device axes (photo sessions).
+    cv::Vec3d gravity{0, 0, 0};
+    bool has_gravity = false;
 
     cv::Matx33d R() const { return T_wc.get_minor<3, 3>(0, 0); }
     cv::Vec3d center() const { return {T_wc(0, 3), T_wc(1, 3), T_wc(2, 3)}; }
@@ -65,6 +68,11 @@ struct Session {
     int depth_dropped_skew = 0;
     int frames_dropped = 0;
     int tracking_jumps = 0;  // times the pose jumped faster than a hand moves
+    // Photos only: poses come from the images (sfm.h), not the phone. Until then frames hold identity.
+    bool photos = false;
+    bool scale_assumed = false;  // true once poses came from photos: sizes are a guess until calibrated
+    int sensor_orientation = 90;
+    bool focal_calibrated = false;  // camera.intrinsics == "calibrated": the focal length is trusted as is
 
     std::filesystem::path image_path(const Frame& f) const;
     std::filesystem::path depth_path(const Frame& f) const;

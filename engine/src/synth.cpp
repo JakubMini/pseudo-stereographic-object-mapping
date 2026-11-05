@@ -9,6 +9,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "psom/session.h"
+#include "psom/sfm.h"
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
@@ -136,10 +137,10 @@ Result synth_project(const fs::path& project, const SynthSpec& sp) {
         {"created_utc", "2026-01-01T00:00:00Z"},
         {"device", {{"manufacturer", "psom"}, {"model", "synthetic"}, {"arcore", "none"}}},
         {"conventions",
-         {{"pose", "arcore_gl_world_from_camera"}, {"world_up", "+y"}, {"depth_units", "mm"}, {"image_orientation", "sensor"}}},
-        {"camera", {{"sensor_orientation_deg", 0}, {"display_rotation_deg", 0}}},
+         {{"pose", sp.photos ? "none" : "arcore_gl_world_from_camera"}, {"world_up", "+y"}, {"depth_units", "mm"}, {"image_orientation", "sensor"}}},
+        {"camera", {{"sensor_orientation_deg", sp.photos ? 90 : 0}, {"display_rotation_deg", 0}}},
         {"image", {{"width", W}, {"height", H}}},
-        {"depth", {{"supported", sp.depth}, {"width", DW}, {"height", dh}, {"max_skew_ns", 16666666}}},
+        {"depth", {{"supported", sp.depth && !sp.photos}, {"width", DW}, {"height", dh}, {"max_skew_ns", 16666666}}},
         {"clocks", {{"sensor_minus_arcore_ns", 0}}},
         {"target", nullptr},
     };
@@ -180,7 +181,7 @@ Result synth_project(const fs::path& project, const SynthSpec& sp) {
         const std::string stem = frame_stem(i);
         cv::imwrite((dir / "frames" / (stem + ".jpg")).string(), img, {cv::IMWRITE_JPEG_QUALITY, 95});
 
-        if (sp.depth) {
+        if (sp.depth && !sp.photos) {
             cv::Mat dm(dh, DW, CV_16U, cv::Scalar(0)), cm(dh, DW, CV_8U, cv::Scalar(0));
             for (int y = 0; y < dh; ++y)
                 for (int x = 0; x < DW; ++x) {
@@ -197,7 +198,7 @@ Result synth_project(const fs::path& project, const SynthSpec& sp) {
         }
 
         // feature points: surface samples near the object, as ARCore would track them
-        for (int k = 0; k < 60; ++k) {
+        for (int k = 0; k < (sp.photos ? 0 : 60); ++k) {
             const double u = std::uniform_real_distribution<double>(0, W)(rng), v = std::uniform_real_distribution<double>(0, H)(rng);
             const Hit h = scene.cast(C, cv::normalize(R * K.ray(u, v)));
             if (h.t >= 1e29) continue;
@@ -239,6 +240,24 @@ Result synth_project(const fs::path& project, const SynthSpec& sp) {
                      {"sharpness", sd[0] * sd[0]},
                      {"depth", sp.depth},
                      {"depth_t_ns", t}};
+        if (sp.photos) {
+            // what a phone without tracking knows: a focal length from its spec sheet and gravity
+            line.erase("tracking");
+            line.erase("depth_t_ns");
+            line["depth"] = false;
+            line["truth_pose"] = line["pose"];  // for tests; the engine ignores it
+            line.erase("pose");
+            const double fg = K.fx * 1.08;
+            line["K"] = {fg, fg, K.cx, K.cy};
+            const cv::Vec3d up_c = R.t() * cv::Vec3d(0, 1, 0);
+            cv::Vec3d g(0, 0, 0);  // device axes, from up in camera axes (inverse of device_up_to_camera)
+            for (int a = 0; a < 3; ++a) {
+                cv::Vec3d e(0, 0, 0);
+                e[a] = 1;
+                g[a] = 9.81 * device_up_to_camera(e, 90).dot(up_c);
+            }
+            line["gravity"] = {g[0], g[1], g[2]};
+        }
         last_line = line.dump();
         if (sp.interrupted && i == sp.frames - 1)
             frames << last_line.substr(0, last_line.size() / 2);  // the app died mid-write

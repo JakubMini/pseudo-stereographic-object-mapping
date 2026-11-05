@@ -15,6 +15,7 @@
 #include "psom/isolate.h"
 #include "psom/repair.h"
 #include "psom/session.h"
+#include "psom/sfm.h"
 #include "psom/step.h"
 #include "psom/tsdf.h"
 
@@ -139,6 +140,70 @@ std::string fmt(const char* f, double x) {
     return b;
 }
 
+json mat_json(const cv::Matx44d& T) {
+    json a = json::array();
+    for (double x : T.val) a.push_back(x);
+    return a;
+}
+
+// Photo scans: poses from the images, cached in recon/sfm.json (keyed by the frames and parameters).
+Result solve_poses(const fs::path& recon, Session& s, const Progress& progress, bool verbose, json& info) {
+    SfmParams sp;
+    sp.verbose = verbose;
+    sp.refine_focal = !s.focal_calibrated;
+    json want = {{"version", 1}, {"frames", json::array()},
+                 {"params", {{"max_side", sp.max_side}, {"max_features", sp.max_features}, {"contrast", sp.contrast}, {"equalize", sp.equalize}, {"window", sp.window},
+                             {"ratio", sp.ratio}, {"min_inliers", sp.min_inliers}, {"epipolar_px", sp.epipolar_px},
+                             {"pnp_px", sp.pnp_px}, {"refine_focal", sp.refine_focal}, {"max_reproj_px", sp.max_reproj_px}, {"min_angle_deg", sp.min_angle_deg}}}};
+    for (auto& f : s.frames) want["frames"].push_back(f.i);
+    SfmResult r;
+    Result res;
+    res.stage = "poses";
+    json have = read_json(recon / "sfm.json");
+    bool cached = have.is_object() && have.value("key", json()) == want;
+    if (cached) {
+        try {
+            r.K = s.frames[0].K;
+            r.K.fx = r.K.fy = have["focal_px"].get<double>();
+            r.f_guess = have["focal_guess_px"].get<double>();
+            r.rms_px = have["rms_px"].get<double>();
+            for (auto& f : have["frames"]) {
+                r.frames.push_back(f["k"].get<int>());
+                cv::Matx44d T;
+                for (int k = 0; k < 16; ++k) T.val[k] = f["T_wc"][k].get<double>();
+                r.T_wc.push_back(T);
+            }
+            for (auto& X : have["points"]) r.points.emplace_back(X[0].get<double>(), X[1].get<double>(), X[2].get<double>());
+            for (auto& w : have["warnings"]) res.warn(w.get<std::string>());
+            cached = !r.frames.empty() && r.frames.back() < int(s.frames.size());
+        } catch (const std::exception&) {
+            cached = false;
+        }
+    }
+    if (!cached) {
+        r = SfmResult{};
+        Result sr = run_sfm(s, sp, r, progress);
+        if (!sr.ok) return sr;
+        res.absorb(sr);
+        json fr = json::array(), pts = json::array();
+        for (size_t k = 0; k < r.frames.size(); ++k) fr.push_back({{"k", r.frames[k]}, {"T_wc", mat_json(r.T_wc[k])}});
+        for (auto& X : r.points) pts.push_back({X[0], X[1], X[2]});
+        write_json(recon / "sfm.json", {{"key", want}, {"id", now_utc() + fmt("-%.4f", r.rms_px)}, {"focal_px", r.K.fx},
+                                        {"focal_guess_px", r.f_guess}, {"rms_px", r.rms_px}, {"warnings", sr.warnings},
+                                        {"frames", fr}, {"points", pts}});
+        have = read_json(recon / "sfm.json");
+    }
+    const size_t total = s.frames.size();
+    Result ar = apply_sfm(s, r);
+    if (!ar.ok) return ar;
+    res.absorb(ar);
+    info = {{"source", "photos"}, {"placed", s.frames.size()}, {"photos", total}, {"rms_px", r.rms_px},
+            {"focal_px", r.K.fx}, {"focal_guess_px", r.f_guess}, {"points", s.points.size()},
+            {"id", have.is_object() ? have.value("id", std::string()) : std::string()}};
+    res.ok = true;
+    return res;
+}
+
 }  // namespace
 
 Result reconstruct(const fs::path& project, const Options& o, const Progress& progress) {
@@ -168,6 +233,12 @@ Result reconstruct(const fs::path& project, const Options& o, const Progress& pr
     Result lr = load_session(project / "session", s);
     if (!lr.ok) return failed(lr);
     res.absorb(lr);
+    json poses = {{"source", "arcore"}};
+    if (s.photos) {
+        Result pr = solve_poses(recon, s, progress, o.verbose, poses);
+        if (!pr.ok) return failed(pr);
+        res.absorb(pr);
+    }
     if (o.verbose) {
         const cv::Vec3d c = scene_center(s);
         std::fprintf(stderr, "{\"event\":\"scene\",\"frames\":%zu,\"points\":%zu,\"centre\":[%.3f,%.3f,%.3f]}\n", s.frames.size(), s.points.size(), c[0], c[1], c[2]);
@@ -177,7 +248,7 @@ Result reconstruct(const fs::path& project, const Options& o, const Progress& pr
     P("depth", 0);
     const size_t n = s.frames.size();
     std::vector<DepthMap> maps(n);
-    json want = {{"version", 1}, {"force_mvs", o.force_mvs}, {"frames", json::array()},
+    json want = {{"version", 1}, {"force_mvs", o.force_mvs}, {"frames", json::array()}, {"poses", poses.value("id", std::string())},
                  {"mvs", {{"width", o.mvs.width}, {"planes", o.mvs.planes}, {"neighbours", o.mvs.neighbours},
                           {"best_k", o.mvs.best_k}, {"window", o.mvs.window}, {"min_zncc", o.mvs.min_zncc},
                           {"min_texture", o.mvs.min_texture}, {"max_rel_sigma", o.mvs.max_rel_sigma},
@@ -375,6 +446,8 @@ Result reconstruct(const fs::path& project, const Options& o, const Progress& pr
                  "): there are no frames from those moments");
 
     const double factor = proj["scale"].value("factor", 1.0);
+    const bool scale_known = !s.scale_assumed || proj["scale"].value("known_mm", json()).is_number();
+    if (!scale_known) res.warn("the size is a guess until you set the scale: photos alone don't measure it");
     json dims = nullptr;
     {
         const cv::Vec3d ax(box.axes(0, 0), box.axes(0, 1), box.axes(0, 2)), ay(box.axes(1, 0), box.axes(1, 1), box.axes(1, 2));
@@ -408,7 +481,7 @@ Result reconstruct(const fs::path& project, const Options& o, const Progress& pr
         hmax = pct(ph, 0.995);
         hmin = pct(ph, 0.005);
         const double k = 1000 * factor;
-        dims = {{"length", a * k}, {"width", b * k}, {"height", (hmax - (plane.found ? 0.0 : hmin)) * k}, {"scale_factor", factor},
+        dims = {{"length", a * k}, {"width", b * k}, {"height", (hmax - (plane.found ? 0.0 : hmin)) * k}, {"scale_factor", factor}, {"scale_known", scale_known},
                 {"frame", plane.found ? "support plane" : "crop box"},
                 {"method", "0.5-99.5 percentile extents of mesh vertices"}};
     }
@@ -417,6 +490,7 @@ Result reconstruct(const fs::path& project, const Options& o, const Progress& pr
     json report = {
         {"ok", true},
         {"warnings", res.warnings},
+        {"poses", poses},
         {"session", {{"keyframes", n}, {"dropped", s.frames_dropped}, {"capture_ended", s.capture_ended},
                      {"rejected_by_app", s.rejected}, {"tracking_loss", tl}, {"depth_skew_dropped", s.depth_dropped_skew}}},
         {"depth", {{"raw_frames", raw_frames}, {"mvs_frames", mvs_frames}, {"frames_with_depth", with_depth},
@@ -467,6 +541,11 @@ Result export_project(const fs::path& project, const Progress& progress) {
     if (!read_ply(project / "recon" / "mesh.ply", m, err)) return failed(Result::fail("export", "mesh.ply: " + err));
     const double factor = proj["scale"].value("factor", 1.0);
     if (!std::isfinite(factor) || factor < 0.1 || factor > 10) return failed(Result::fail("export", "scale factor out of range"));
+    // A photo scan's size is a guess: a STEP in millimetres would claim a measurement nobody made.
+    const json rep = read_json(project / "recon" / "report.json");
+    if (rep.is_object() && rep.value("poses", json::object()).value("source", "") == "photos" &&
+        !proj["scale"].value("known_mm", json()).is_number())
+        return failed(Result::fail("export", "Set the scale first. Photos alone don't tell how big the object is."));
     const Topology topo = validate(m);
     StepInfo info;
     Result r = export_step(m, 1000 * factor, topo, project / "recon" / "model.step", info);

@@ -14,6 +14,7 @@ struct SynthSpec {
     std::string shape = "box";          // box: dims L,W,H; cylinder: D,D,H
     cv::Vec3d dims_mm{100, 60, 40};
     bool depth = true;                  // write raw depth like an ARCore phone that supports it
+    bool photos = false;                // photos only: no poses, a focal guess 8 % off, gravity per frame
     bool low_texture = false;           // plain object surface
     bool tracking_loss = false;         // a gap in the middle of the orbit
     bool interrupted = false;           // no capture_end, last line cut short

@@ -8,6 +8,8 @@
 #include <nlohmann/json.hpp>
 
 #include "psom/pipeline.h"
+#include "psom/session.h"
+#include "psom/sfm.h"
 #include "psom/synth.h"
 
 using json = nlohmann::json;
@@ -17,9 +19,10 @@ namespace {
 int usage() {
     std::fprintf(stderr,
                  "usage:\n"
-                 "  psom synth <project> [--shape box|cylinder] [--dims L,W,H] [--no-depth] [--low-texture]\n"
+                 "  psom synth <project> [--shape box|cylinder] [--dims L,W,H] [--no-depth] [--photos] [--low-texture]\n"
                  "             [--tracking-loss] [--interrupted] [--frames N] [--pose-noise MM] [--seed N]\n"
                  "  psom reconstruct <project> [--force-mvs] [--mem-mb N] [--faces N] [--mvs-width PX] [--mvs-window PX] [--verbose]\n"
+                 "  psom poses <project> [--verbose]     photo scans: camera poses only, nothing written\n"
                  "  psom export <project>\n"
                  "  psom evaluate <project> <truth.json>\n");
     return 2;
@@ -62,6 +65,7 @@ int main(int argc, char** argv) {
         if (auto v = value("--pose-noise")) s.pose_noise_mm = std::atof(v);
         if (auto v = value("--seed")) s.seed = uint32_t(std::atoi(v));
         s.depth = !flag("--no-depth");
+        s.photos = flag("--photos");
         s.low_texture = flag("--low-texture");
         s.tracking_loss = flag("--tracking-loss");
         s.interrupted = flag("--interrupted");
@@ -79,6 +83,19 @@ int main(int argc, char** argv) {
         return report(psom::reconstruct(project, o, progress));
     }
     if (cmd == "export") return report(psom::export_project(project, progress));
+    if (cmd == "poses") {
+        psom::Session s;
+        psom::Result r = psom::load_session(project / "session", s);
+        if (!r.ok) return report(r);
+        psom::SfmParams p;
+        p.verbose = flag("--verbose");
+        p.refine_focal = !s.focal_calibrated;
+        psom::SfmResult out;
+        r = psom::run_sfm(s, p, out);
+        json j = {{"placed", out.frames.size()}, {"photos", s.frames.size()}, {"rms_px", out.rms_px}, {"focal_px", out.K.fx},
+                  {"points", out.points.size()}};
+        return report(r, j.dump());
+    }
     if (cmd == "evaluate") {
         if (argc < 4) return usage();
         std::string summary;

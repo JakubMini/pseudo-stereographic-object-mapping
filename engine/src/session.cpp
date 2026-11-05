@@ -69,16 +69,24 @@ bool parse_frame(const json& j, const Session& s, Frame& f, bool& wants_depth, s
     f.i = j["i"].get<int>();
     if (!j.contains("t_ns") || !j["t_ns"].is_number_integer()) return why = "missing t_ns", false;
     f.t_ns = j["t_ns"].get<int64_t>();
-    if (!j.contains("pose") || !j["pose"].is_array() || j["pose"].size() != 16) return why = "pose needs 16 numbers", false;
-    cv::Matx44d T;
-    for (int k = 0; k < 16; ++k) {
-        if (!j["pose"][k].is_number()) return why = "pose has a non-number", false;
-        T.val[k] = j["pose"][k].get<double>();  // row-major
+    if (j.contains("gravity") && j["gravity"].is_array() && j["gravity"].size() == 3 && j["gravity"][0].is_number() &&
+        j["gravity"][1].is_number() && j["gravity"][2].is_number()) {
+        f.gravity = {j["gravity"][0].get<double>(), j["gravity"][1].get<double>(), j["gravity"][2].get<double>()};
+        const double g = cv::norm(f.gravity);
+        f.has_gravity = std::isfinite(g) && g > 1 && g < 20;  // m/s^2; anything else isn't gravity
     }
-    if (!valid_pose(T, why)) return false;
-    f.T_wc = gl_to_cv(T);
-    f.T_wc_depth = f.T_wc;
-    if (j.contains("depth_pose")) {
+    if (!s.photos) {
+        if (!j.contains("pose") || !j["pose"].is_array() || j["pose"].size() != 16) return why = "pose needs 16 numbers", false;
+        cv::Matx44d T;
+        for (int k = 0; k < 16; ++k) {
+            if (!j["pose"][k].is_number()) return why = "pose has a non-number", false;
+            T.val[k] = j["pose"][k].get<double>();  // row-major
+        }
+        if (!valid_pose(T, why)) return false;
+        f.T_wc = gl_to_cv(T);
+        f.T_wc_depth = f.T_wc;
+    }
+    if (!s.photos && j.contains("depth_pose")) {
         if (!j["depth_pose"].is_array() || j["depth_pose"].size() != 16) return why = "depth_pose needs 16 numbers", false;
         cv::Matx44d Td;
         for (int k = 0; k < 16; ++k) {
@@ -98,7 +106,7 @@ bool parse_frame(const json& j, const Session& s, Frame& f, bool& wants_depth, s
         return why = "focal length is not positive", false;
     if (!(f.K.cx >= 0 && f.K.cx < s.width && f.K.cy >= 0 && f.K.cy < s.height))
         return why = "principal point outside the image", false;
-    if (j.value("tracking", std::string()) != "tracking") return why = "not tracking", false;
+    if (!s.photos && j.value("tracking", std::string()) != "tracking") return why = "not tracking", false;
     f.sharpness = j.value("sharpness", 0.0);
     wants_depth = j.value("depth", false);
     f.depth_t_ns = j.contains("depth_t_ns") && j["depth_t_ns"].is_number_integer() ? j["depth_t_ns"].get<int64_t>() : 0;
@@ -123,8 +131,14 @@ Result load_session(const fs::path& dir, Session& s) {
         return Result::fail("load", "unknown session format '" + meta.value("format", std::string()) + "'");
     const json conv = meta.value("conventions", json::object());
     // An unknown convention is refused rather than guessed.
-    if (conv.value("pose", std::string()) != "arcore_gl_world_from_camera")
+    // "none": a photo scan; the poses are worked out from the images later.
+    const std::string pose_conv = conv.value("pose", std::string());
+    if (pose_conv == "none")
+        s.photos = true;
+    else if (pose_conv != "arcore_gl_world_from_camera")
         return Result::fail("load", "unsupported pose convention");
+    s.sensor_orientation = meta.value("camera", json::object()).value("sensor_orientation_deg", 90);
+    s.focal_calibrated = meta.value("camera", json::object()).value("intrinsics", std::string()) == "calibrated";
     if (conv.value("depth_units", std::string()) != "mm") return Result::fail("load", "unsupported depth units");
     if (conv.value("image_orientation", std::string()) != "sensor")
         return Result::fail("load", "unsupported image orientation");
@@ -232,7 +246,7 @@ Result load_session(const fs::path& dir, Session& s) {
     // means the poses after that point no longer fit the ones before. Keep the longest steady stretch.
     constexpr double kMaxSpeed = 0.5;  // m/s; scanning around something on a table is well below this
     size_t best_from = 0, best_len = 0, from = 0, jumps = 0;
-    for (size_t k = 0; k <= s.frames.size(); ++k) {
+    for (size_t k = 0; !s.photos && k <= s.frames.size(); ++k) {
         bool cut = k == s.frames.size();
         if (!cut && k > 0) {
             const double dt = (s.frames[k].t_ns - s.frames[k - 1].t_ns) * 1e-9;

@@ -10,7 +10,13 @@ endif()
 option(PSOM_BUILD_CLI "Build the psom command-line tool" ON)
 option(PSOM_BUILD_TESTS "Build the tests" ON)
 
-find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
+find_package(OpenCV REQUIRED)
+# OpenCV 5 renamed the modules structure from motion needs; the functions are the same.
+if(OpenCV_VERSION VERSION_GREATER_EQUAL 5)
+  set(PSOM_CV_SFM opencv_features opencv_geometry opencv_flann)
+else()
+  set(PSOM_CV_SFM opencv_features2d opencv_calib3d opencv_flann)
+endif()
 find_package(OpenCASCADE REQUIRED)
 
 include(FetchContent)
@@ -23,10 +29,10 @@ FetchContent_MakeAvailable(json)
 
 add_library(psom_engine STATIC
   src/session.cpp src/depth.cpp src/mvs.cpp src/isolate.cpp src/tsdf.cpp src/mesh.cpp
-  src/repair.cpp src/step.cpp src/pipeline.cpp src/synth.cpp)
+  src/repair.cpp src/step.cpp src/pipeline.cpp src/synth.cpp src/sfm.cpp)
 target_include_directories(psom_engine PUBLIC include ${OpenCASCADE_INCLUDE_DIR})
 target_link_libraries(psom_engine
-  PUBLIC opencv_core opencv_imgproc opencv_imgcodecs
+  PUBLIC opencv_core opencv_imgproc opencv_imgcodecs ${PSOM_CV_SFM}
   PRIVATE nlohmann_json::nlohmann_json
           TKDESTEP TKXSBase TKShHealing TKTopAlgo TKGeomAlgo TKBRep TKGeomBase TKG3d TKG2d TKMath TKernel)
 set_target_properties(psom_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
