@@ -1,0 +1,15 @@
+# engine
+engine/build/
+third_party/android/
+# android
+android/.gradle/
+android/build/
+android/app/build/
+android/app/.cxx/
+android/local.properties
+android/.idea/
+*.iml
+# data
+testdata/real/
+*.tar
+.DS_Store
