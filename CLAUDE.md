@@ -46,11 +46,11 @@ agreement as Jakub's other projects, adapted to an Android app and a C++ engine.
   - `src/depth.cpp`: raw-depth frames → metric depth + σ; the `recon/depth` cache.
   - `src/mvs.cpp`: plane-sweep multi-view stereo, consistency checks, uncertainty.
   - `src/isolate.cpp`: support plane, region of interest, crop box.
-  - `src/tsdf.cpp`: sparse voxel-block TSDF with the memory budget; marching cubes.
+  - `src/tsdf.cpp`: sparse voxel-block TSDF with the memory budget; marching tetrahedra (welded, manifold).
   - `src/mesh.cpp`: the mesh type and its PLY file.
   - `src/repair.cpp`: fragments, the base cap, small-hole fill, quadric decimation that keeps the
     mesh manifold (link condition), topology validation.
-  - `src/step.cpp`: faceted B-rep, sewing, STEP write and read-back.
+  - `src/step.cpp`: faceted B-rep with exactly shared edges, STEP write and read-back.
   - `src/pipeline.cpp`: the stages in order, the report and `project.json`.
   - `src/synth.cpp`: renders synthetic sessions for tests.
   - `cli/main.cpp`: `psom synth | reconstruct | export | evaluate`.
