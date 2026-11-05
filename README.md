@@ -5,8 +5,9 @@ open in CAD.
 
 > **Status: built, not yet proven on a real phone.** The engine reconstructs synthetic scans within
 > its test targets and its STEP files open in FreeCAD; the app runs end to end on an arm64 emulator
-> with a recorded scan. Scanning with ARCore on a real phone, and accuracy against calipers, have
-> not been done yet. Until they have, treat it as unproven.
+> with a recorded scan. The first real-phone scans (Galaxy A56) failed because ARCore's tracking
+> broke down within seconds; 0.1.4 runs ARCore with its stock settings to find out whether ours were
+> the cause. Accuracy against calipers has not been measured. Until it has, treat it as unproven.
 
 ## What it is
 
@@ -63,7 +64,7 @@ ARCore's poses are not metrology. The two-point calibration corrects scale, not 
 | Synthetic box, images only (MVS) | ±4 mm | 102.4 × 62.3 × 40.5 mm, closed solid |
 | Synthetic cylinder Ø50 × 80 mm, raw depth | ±2 mm | 50.5 × 50.5 × 80.2 mm, closed solid |
 | Synthetic cylinder, images only (MVS) | ±4 mm | 50.7 × 50.6 × 80.5 mm, closed solid |
-| Real phone, caliper-measured objects | — | **not yet recorded** ([how](docs/real-sessions.md)) |
+| Real phone, caliper-measured objects | — | **not yet**: in the first scans (Galaxy A56) ARCore lost track within seconds ([how to record](docs/real-sessions.md)) |
 
 The synthetic rows are rendered scenes with perfect poses. They are test gates, not a promise about
 real scans. The real-phone row is the one that matters.

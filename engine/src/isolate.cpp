@@ -161,7 +161,7 @@ Result auto_crop(const Session& s, const std::vector<DepthMap>& maps, CropBox& b
     const double radius = std::max(0.15, 0.6 * percentile(dist, 0.5));
 
     const auto pts = depth_points(s, maps, 2, 0.01);
-    if (pts.size() < 200) return Result::fail("isolate", "not enough reliable depth to find the object");
+    if (pts.size() < 200) return Result::fail("isolate", "Too little depth was measured to find the object.");
 
     plane = find_support_plane(pts, center, radius);
     if (!plane.found) {
@@ -185,7 +185,7 @@ Result auto_crop(const Session& s, const std::vector<DepthMap>& maps, CropBox& b
         const double ru = o.dot(u), rv = o.dot(v);
         if (h > kObjMinHeight && h < 2 * radius && std::hypot(ru, rv) < radius) obj.push_back(X);
     }
-    if (obj.size() < 100) return Result::fail("isolate", "nothing found above the support plane");
+    if (obj.size() < 100) return Result::fail("isolate", "Couldn't find anything standing on the table.");
 
     // largest 26-connected cluster on a 5 mm grid
     const double cell = 0.005;
@@ -228,7 +228,7 @@ Result auto_crop(const Session& s, const std::vector<DepthMap>& maps, CropBox& b
             hs.push_back(plane.height(X));
             keep.push_back(X);
         }
-    if (keep.size() < 50) return Result::fail("isolate", "the object cluster is too small");
+    if (keep.size() < 50) return Result::fail("isolate", "Couldn't find the object: too little of it was measured.");
     if (sizes.size() > 1) {
         size_t rest = 0;
         for (size_t i = 0; i < sizes.size(); ++i)

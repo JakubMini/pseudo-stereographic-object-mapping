@@ -94,13 +94,13 @@ class ArCapture(private val activity: Activity, private val root: File) : GLSurf
     fun resume(): String? {
         try {
             val s = session ?: Session(activity).also { s ->
-                // ARCore's own default camera setup: its best-tested path for tracking. A larger CPU image
-                // stream made tracking break down on a mid-range phone, and the engine works at 640 px anyway.
+                // ARCore exactly as Google ships it: default camera, fixed focus, blocking updates, no
+                // depth. On a Galaxy A56 our extras (1080p CPU stream, autofocus, raw depth) went with
+                // tracking pausing 6 times a second and the pose running away within seconds.
+                // shortcut: raw depth is off everywhere; turn it back on per device once verified on one
+                // with a real depth sensor (the engine already uses it, with its own pose).
                 val c = Config(s)
-                depthMode = s.isDepthModeSupported(Config.DepthMode.RAW_DEPTH_ONLY)
-                if (depthMode) c.depthMode = Config.DepthMode.RAW_DEPTH_ONLY
-                c.focusMode = Config.FocusMode.AUTO
-                c.updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
+                depthMode = false
                 s.configure(c)
                 session = s
             }
