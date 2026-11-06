@@ -13,8 +13,8 @@ android {
         applicationId = "com.jakubmini.psom"
         minSdk = 26
         targetSdk = 35
-        versionCode = 11
-        versionName = "0.2.4"
+        versionCode = 12
+        versionName = "0.2.5"
         ndk { abiFilters += "arm64-v8a" }  // phones; the emulator ABI is not built
         externalNativeBuild { cmake { arguments += listOf("-DANDROID_STL=c++_shared") } }
     }

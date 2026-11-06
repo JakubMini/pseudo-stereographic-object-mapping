@@ -164,6 +164,7 @@ enum class Tool { ORBIT, CROP, MEASURE }
 class MeshView(context: Context) : GLSurfaceView(context) {
     var onPick: ((DoubleArray) -> Unit)? = null
     var onCropChanged: ((Crop) -> Unit)? = null
+    var onTap: (() -> Unit)? = null  // a tap while orbiting
     var tool = Tool.ORBIT
 
     private val r = Renderer()
@@ -278,6 +279,7 @@ class MeshView(context: Context) : GLSurfaceView(context) {
         }
 
         override fun onSingleTapUp(e: MotionEvent): Boolean {
+            if (tool == Tool.ORBIT) onTap?.invoke()
             if (tool != Tool.MEASURE) return false
             val m = mesh ?: return false
             val (o, d) = ray(e.x, e.y)

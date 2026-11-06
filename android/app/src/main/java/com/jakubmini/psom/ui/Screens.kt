@@ -652,6 +652,33 @@ private fun FactRow(label: String, value: String) {
     }
 }
 
+/** Full-screen toggle for the model: four corners pointing out (expand) or in (shrink). */
+@Composable
+private fun CornerButton(expand: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Box(
+        modifier.size(44.dp).clip(CircleShape).clickable(role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = if (expand) "Full screen" else "Exit full screen" },
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.size(18.dp)) {
+            val w = size.width
+            val l = w * 0.36f
+            val stroke = 2.dp.toPx()
+            for (cx in floatArrayOf(0f, w)) for (cy in floatArrayOf(0f, w)) {
+                val sx = if (cx == 0f) 1f else -1f
+                val sy = if (cy == 0f) 1f else -1f
+                // expand: the corner sits on the edge; shrink: it sits l in, arms pointing out
+                val px = if (expand) cx else cx + sx * l
+                val py = if (expand) cy else cy + sy * l
+                val ax = if (expand) sx else -sx
+                val ay = if (expand) sy else -sy
+                drawLine(Palette.Ink, Offset(px, py), Offset(px + ax * l, py), stroke, StrokeCap.Round)
+                drawLine(Palette.Ink, Offset(px, py), Offset(px, py + ay * l), stroke, StrokeCap.Round)
+            }
+        }
+    }
+}
+
 @Composable
 private fun ReviewScreen(vm: AppViewModel, dir: File, exported: Boolean, error: String?) {
     val ctx = LocalContext.current
@@ -669,6 +696,7 @@ private fun ReviewScreen(vm: AppViewModel, dir: File, exported: Boolean, error: 
     val scaleKnown = remember(version) { scaleKnown(report, dir) }
     var menu by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var full by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val view = remember { MeshView(ctx) }
 
@@ -678,6 +706,8 @@ private fun ReviewScreen(vm: AppViewModel, dir: File, exported: Boolean, error: 
     LaunchedEffect(picks.size, tool) { view.setMarks(if (tool == Tool.MEASURE) picks.toList() else emptyList()) }
     view.onCropChanged = { c -> crop = c; cropEdited = true }
     view.onPick = { p -> if (picks.size >= 2) picks.clear(); picks.add(p) }
+    view.onTap = { full = !full }
+    BackHandler(full) { full = false }
 
     if (mesh == null) {
         Column(Modifier.fillMaxSize().statusBarsPadding().padding(24.dp)) {
@@ -689,10 +719,16 @@ private fun ReviewScreen(vm: AppViewModel, dir: File, exported: Boolean, error: 
     }
 
     Column(Modifier.fillMaxSize().background(Palette.Cream)) {
-        Box(Modifier.fillMaxWidth().height(468.dp)) {
+        Box(if (full) Modifier.fillMaxSize() else Modifier.fillMaxWidth().height(468.dp)) {
             AndroidView({ view }, Modifier.fillMaxSize())
+            if (full) {
+                CornerButton(expand = false, Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(16.dp)) { full = false }
+                return@Box
+            }
             Row(Modifier.fillMaxWidth().statusBarsPadding().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                 BackLink(vm::openProjects)
+                Spacer(Modifier.weight(1f))
+                if (tool == Tool.ORBIT) CornerButton(expand = true) { full = true }
                 Box {
                     Box(
                         Modifier.size(44.dp).clip(CircleShape).clickable(role = Role.Button) { menu = true }.semantics { contentDescription = "More" },
@@ -713,7 +749,7 @@ private fun ReviewScreen(vm: AppViewModel, dir: File, exported: Boolean, error: 
                 Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp).width(264.dp),
             )
         }
-        Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 24.dp).navigationBarsPadding()) {
+        if (!full) Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 24.dp).navigationBarsPadding()) {
             when (tool) {
                 Tool.ORBIT -> {
                     InspectPanel(report, factor, scaleKnown, color, { color = it }, { tool = Tool.MEASURE; picks.clear() })
