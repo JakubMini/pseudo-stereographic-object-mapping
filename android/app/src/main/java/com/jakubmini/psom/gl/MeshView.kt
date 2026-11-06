@@ -391,10 +391,12 @@ class MeshView(context: Context) : GLSurfaceView(context) {
                 ColorMode.DIVERSITY -> m.diversity
                 ColorMode.UNCERTAINTY -> m.sigma
             }
+            // guessed by the engine, not seen: weight 0 (a seen vertex has at least 0.25 after decimation)
+            fun guessed(i: Int) = m.weight[i] < 0.25f
             if (ch == null) {
                 for (i in 0 until m.vertices) { colors[3 * i] = 0.98f; colors[3 * i + 1] = 0.95f; colors[3 * i + 2] = 0.89f }
             } else {
-                val sorted = ch.sorted()
+                val sorted = (0 until m.vertices).filter { !guessed(it) }.map { ch[it] }.sorted().ifEmpty { listOf(0f) }
                 val p5 = sorted[sorted.size / 20]
                 val p95 = sorted[sorted.size * 19 / 20]
                 for (i in 0 until m.vertices) {
@@ -407,6 +409,7 @@ class MeshView(context: Context) : GLSurfaceView(context) {
                     colors[3 * i + 2] = 0.290f + (0.706f - 0.290f) * t
                 }
             }
+            for (i in 0 until m.vertices) if (guessed(i)) { colors[3 * i] = 0.839f; colors[3 * i + 1] = 0.698f; colors[3 * i + 2] = 0.243f }  // mustard
             pos = fb(m.pos)
             nrm = fb(n)
             col = fb(colors)

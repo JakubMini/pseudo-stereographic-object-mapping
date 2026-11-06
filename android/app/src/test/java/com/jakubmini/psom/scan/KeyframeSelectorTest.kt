@@ -64,4 +64,16 @@ class KeyframeSelectorTest {
         assertEquals(0.0, KeyframeSelector.sharpness(flat, w, w, w, 1), 1e-9)
         assertTrue(KeyframeSelector.sharpness(checker, w, w, w, 1) > 1000)
     }
+
+    @Test fun keepsTheSharpestFrameOfItsWindow() {
+        val w = SharpestInWindow<String>(windowNs = 300)
+        var made = 0
+        w.offer(0, 50.0) { made++; "a" }
+        w.offer(100, 80.0) { made++; "b" }
+        w.offer(200, 60.0) { made++; "c" }  // not sharper: never copied
+        assertEquals(null, w.tick(250))
+        assertEquals("b", w.tick(300))
+        assertEquals(2, made)
+        assertEquals(null, w.flush())
+    }
 }

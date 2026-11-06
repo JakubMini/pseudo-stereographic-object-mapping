@@ -510,6 +510,7 @@ private fun BuildingScreen(vm: AppViewModel, dir: File) {
         "Depth" to setOf("depth"),
         "Finding the object" to setOf("isolate"),
         "Fusing the surfaces" to setOf("fusion"),
+        "Filling the gaps" to setOf("guess"),
         "Closing and checking" to setOf("mesh", "repair", "report", "done"),
     )
     val current = steps.indexOfFirst { progress.stage in it.second }.coerceAtLeast(0)
@@ -565,6 +566,7 @@ private fun stageName(s: String?) = when (s) {
     "depth" -> "Depth"
     "isolate" -> "Finding the object"
     "fusion" -> "Fusing"
+    "guess" -> "Filling the gaps"
     "mesh", "repair" -> "Meshing"
     "export" -> "Export"
     else -> s ?: "Unknown"
@@ -728,6 +730,7 @@ private fun ColumnScope.InspectPanel(report: JsonObject?, factor: Double, scaleK
     fun v(k: String) = (d?.get(k)?.jsonPrimitive?.double ?: 0.0) / atRun * factor
     val scaled = scaleKnown
     val closed = (report?.get("topology") as? JsonObject)?.get("closed_valid")?.jsonPrimitive?.boolean == true
+    val guessed = (report?.get("guess") as? JsonObject)?.get("fraction")?.jsonPrimitive?.double ?: 0.0
     val notes = (report?.get("warnings") as? JsonArray)?.map { it.jsonPrimitive.content } ?: emptyList()
     var showNotes by remember { mutableStateOf(false) }
 
@@ -746,8 +749,15 @@ private fun ColumnScope.InspectPanel(report: JsonObject?, factor: Double, scaleK
     }
     Hairline()
     Row(Modifier.padding(top = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Dot(closed, if (closed) Palette.Sea else Palette.Mustard)
-        Text(if (closed) "Solid" else "Open shell: parts weren't seen", style = Type.Body, color = Palette.Ink, modifier = Modifier.weight(1f))
+        Dot(closed, if (closed && guessed < 0.01) Palette.Sea else Palette.Mustard)
+        Text(
+            when {
+                !closed -> "Open shell: parts weren't seen"
+                guessed >= 0.01 -> "Solid · %.0f %% guessed, in yellow".format(guessed * 100)
+                else -> "Solid"
+            },
+            style = Type.Body, color = Palette.Ink, modifier = Modifier.weight(1f),
+        )
         if (notes.isNotEmpty())
             Text(
                 if (showNotes) "Hide notes" else "${notes.size} note${if (notes.size > 1) "s" else ""}", style = Type.SmallStrong, color = Palette.Ink,

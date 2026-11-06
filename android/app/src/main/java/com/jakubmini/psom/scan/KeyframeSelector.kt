@@ -16,7 +16,7 @@ class KeyframeSelector(
     private val maxWaitNs: Long = 1_500_000_000L,
     private val sharpFactor: Double = 0.6,
     private val maxRateHz: Double = 3.0,
-    private val maxTurnRate: Double = 1.0,
+    private val maxTurnRate: Double = MAX_TURN_RATE,
     val maxFrames: Int = 120,
 ) {
     private var lastDir: DoubleArray? = null
@@ -57,6 +57,9 @@ class KeyframeSelector(
     private fun median(): Double = recent.sorted()[recent.size / 2]
 
     companion object {
+        /** rad/s. At 1/30 s exposure and a ~1400 px focal length, 0.7 rad/s already smears ~30 px. */
+        const val MAX_TURN_RATE = 0.7
+
         fun angleDeg(a: DoubleArray, b: DoubleArray): Double {
             val na = sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2])
             val nb = sqrt(b[0] * b[0] + b[1] * b[1] + b[2] * b[2])
@@ -87,4 +90,28 @@ class KeyframeSelector(
             return sum2 / n - mean * mean
         }
     }
+}
+
+/**
+ * Once a photo is due, the next few frames are all fair candidates: keeps the sharpest of those
+ * that arrive within [windowNs] of the first, and hands it over when a later frame closes the window
+ * (or on [flush]). A hand-held phone pauses for a moment now and then; this catches that moment.
+ */
+class SharpestInWindow<T>(private val windowNs: Long = 300_000_000L) {
+    private var startNs = 0L
+    private var best: T? = null
+    private var bestSharpness = 0.0
+
+    /** Call for every frame: returns the held frame when [tNs] closes its window. */
+    fun tick(tNs: Long): T? = if (best != null && tNs - startNs >= windowNs) flush() else null
+
+    /** A candidate; [make] (the costly copy) only runs when it beats the one held. */
+    fun offer(tNs: Long, sharpness: Double, make: () -> T) {
+        if (best == null) startNs = tNs
+        else if (sharpness <= bestSharpness) return
+        best = make()
+        bestSharpness = sharpness
+    }
+
+    fun flush(): T? = best.also { best = null }
 }

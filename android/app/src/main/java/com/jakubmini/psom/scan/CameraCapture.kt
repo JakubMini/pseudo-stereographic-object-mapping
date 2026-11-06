@@ -5,15 +5,19 @@ import android.graphics.ImageFormat
 import android.graphics.Rect
 import android.graphics.YuvImage
 import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CaptureRequest
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.util.Range
 import android.util.Size
 import androidx.annotation.OptIn
 import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
+import androidx.camera.core.CameraInfo
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -73,7 +77,10 @@ class CameraCapture(private val context: Context, private val root: File) {
     private var startT = 0L
     private var lastT = 0L
     private var frameCount = 0
+    private class Candidate(val t: Long, val dir: DoubleArray?, val rate: Double, val sharpness: Double, val planes: YuvPlanes, val gravity: FloatArray?)
+    private var window = SharpestInWindow<Candidate>()
 
+    @OptIn(ExperimentalCamera2Interop::class)
     fun bind(owner: LifecycleOwner, view: PreviewView) {
         if (ContextCompat.checkSelfPermission(context, android.Manifest.permission.CAMERA) != android.content.pm.PackageManager.PERMISSION_GRANTED) return
         motion.start()
@@ -84,16 +91,24 @@ class CameraCapture(private val context: Context, private val root: File) {
                 provider = p
                 // 4:3 is the sensor's own shape, so the photos keep its whole field of view
                 val fourThree = AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY
-                val preview = Preview.Builder().setResolutionSelector(ResolutionSelector.Builder().setAspectRatioStrategy(fourThree).build()).build()
-                preview.setSurfaceProvider(view.surfaceProvider)
-                val analysis = ImageAnalysis.Builder()
+                val fps = steadyFps(CameraSelector.DEFAULT_BACK_CAMERA.filter(p.availableCameraInfos).firstOrNull())
+                val previewBuilder = Preview.Builder().setResolutionSelector(ResolutionSelector.Builder().setAspectRatioStrategy(fourThree).build())
+                val analysisBuilder = ImageAnalysis.Builder()
                     .setResolutionSelector(
                         ResolutionSelector.Builder().setAspectRatioStrategy(fourThree)
                             .setResolutionStrategy(ResolutionStrategy(Size(1600, 1200), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER))
                             .build(),
                     )
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .build()
+                if (fps != null) {
+                    // a frame rate that can't drop keeps each exposure short: indoors, auto exposure
+                    // otherwise slows to 1/15 s and every photo taken on the move smears
+                    Camera2Interop.Extender(previewBuilder).setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fps)
+                    Camera2Interop.Extender(analysisBuilder).setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fps)
+                }
+                val preview = previewBuilder.build()
+                preview.setSurfaceProvider(view.surfaceProvider)
+                val analysis = analysisBuilder.build()
                 analysis.setAnalyzer(exec, ::analyze)
                 p.unbindAll()
                 camera = p.bindToLifecycle(owner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
@@ -143,7 +158,7 @@ class CameraCapture(private val context: Context, private val root: File) {
             } catch (e: Exception) {
                 Log.e(TAG, "photo failed", e)
             }
-            val fast = scanning && rate > 1.0
+            val fast = scanning && rate > KeyframeSelector.MAX_TURN_RATE
             if (++frameCount % 5 == 0 || ui.value.scanning != scanning || ui.value.fast != fast)
                 ui.value = ui.value.copy(
                     scanning = scanning, keyframes = selector.accepted, fast = fast, coverage = coverage.bins.toList(),
@@ -154,31 +169,41 @@ class CameraCapture(private val context: Context, private val root: File) {
 
     private fun keep(t: Long, image: ImageProxy, rate: Double) {
         val w = writer ?: return
+        window.tick(t)?.let { commit(w, it) }
         val dir = motion.towardCamera()
         if (selector.wouldConsider(t, dir, rate) != Verdict.ACCEPTED) {
             selector.offer(t, dir, rate, 0.0)  // counts the rejection
             return
         }
         val (yp, up, vp) = image.planes
-        val planes = YuvPlanes(
-            image.width, image.height,
-            copy(yp.buffer), yp.rowStride,
-            copy(up.buffer), up.rowStride, up.pixelStride,
-            copy(vp.buffer), vp.rowStride, vp.pixelStride,
-        )
-        val sharp = KeyframeSelector.sharpness(planes.y, planes.width, planes.height, planes.yRow)
-        if (selector.offer(t, dir, rate, sharp) != Verdict.ACCEPTED) return
+        val y = copy(yp.buffer)
+        val sharp = KeyframeSelector.sharpness(y, image.width, image.height, yp.rowStride)
+        window.offer(t, sharp) {
+            val planes = YuvPlanes(
+                image.width, image.height,
+                y, yp.rowStride,
+                copy(up.buffer), up.rowStride, up.pixelStride,
+                copy(vp.buffer), vp.rowStride, vp.pixelStride,
+            )
+            Candidate(t, dir, rate, sharp, planes, motion.gravity?.copyOf())
+        }
+    }
+
+    /** The sharpest frame of a window becomes a keyframe, if it is sharp enough next to the recent ones. */
+    private fun commit(w: SessionWriter, c: Candidate) {
+        if (selector.offer(c.t, c.dir, c.rate, c.sharpness) != Verdict.ACCEPTED) return
+        val p = c.planes
         val out = ByteArrayOutputStream()
-        YuvImage(planes.nv21(), ImageFormat.NV21, planes.width, planes.height, null)
-            .compressToJpeg(Rect(0, 0, planes.width, planes.height), 92, out)
-        w.keyframe(Keyframe(t, k, sharp, out.toByteArray(), motion.gravity?.copyOf()))
-        if (dir != null) coverage.add(dir, ORIGIN)
+        YuvImage(p.nv21(), ImageFormat.NV21, p.width, p.height, null).compressToJpeg(Rect(0, 0, p.width, p.height), 92, out)
+        w.keyframe(Keyframe(c.t, k, c.sharpness, out.toByteArray(), c.gravity))
+        if (c.dir != null) coverage.add(c.dir, ORIGIN)
     }
 
     private fun begin(t: Long, image: ImageProxy) {
         val dir = File(root, SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()))
         project = dir
         selector = KeyframeSelector()
+        window = SharpestInWindow()
         coverage.clear()
         k = intrinsics(image.width, image.height)
         startT = t
@@ -198,6 +223,7 @@ class CameraCapture(private val context: Context, private val root: File) {
         val dir = project ?: return
         writer = null
         try {
+            window.flush()?.let { commit(w, it) }
             w.finish(t, selector.rejected.toMap())
         } catch (e: Exception) {
             Log.e(TAG, "finishing the session failed", e)
@@ -226,6 +252,13 @@ class CameraCapture(private val context: Context, private val root: File) {
         // shortcut: the principal point is taken as the image centre and lens distortion is ignored;
         // fine for phone main cameras, upgrade if a lens with strong distortion shows bent edges.
         return doubleArrayOf(f, f, (w - 1) / 2.0, (h - 1) / 2.0)
+    }
+
+    /** The frame-rate range with the highest floor (30 fps on most phones), or null if none reaches 24. */
+    @OptIn(ExperimentalCamera2Interop::class)
+    private fun steadyFps(info: CameraInfo?): Range<Int>? {
+        val ranges = info?.let { Camera2CameraInfo.from(it).getCameraCharacteristic(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) }
+        return ranges?.filter { it.lower >= 24 }?.maxWithOrNull(compareBy<Range<Int>> { it.lower }.thenByDescending { it.upper })
     }
 
     @OptIn(ExperimentalCamera2Interop::class)
