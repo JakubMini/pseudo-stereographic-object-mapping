@@ -69,6 +69,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -407,6 +409,7 @@ fun ScanScreen(vm: AppViewModel, capture: CameraCapture) {
                     Text("${ui.keyframes} photos · %d:%02d".format(sec / 60, sec % 60), style = Type.SmallMono, color = Color.White)
                 }
             }
+            if (ui.hasTorch) TorchButton(Modifier.align(Alignment.CenterEnd), ui.torch) { capture.setTorch(!ui.torch) }
         }
         ui.error?.let {
             Text(it, style = Type.Body, color = Palette.Ink, modifier = Modifier.align(Alignment.Center).padding(24.dp)
@@ -423,6 +426,27 @@ fun ScanScreen(vm: AppViewModel, capture: CameraCapture) {
                 onPress = { if (vm.pressed()) capture.startScan() },
                 onRelease = { if (vm.released()) capture.stopScan() },
             )
+        }
+    }
+}
+
+@Composable
+private fun TorchButton(modifier: Modifier, on: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier.size(44.dp).clip(CircleShape).background(if (on) Palette.Mustard else Color.White.copy(alpha = 0.14f))
+            .clickable(role = Role.Switch, onClick = onClick)
+            .semantics { contentDescription = if (on) "Torch on" else "Torch off" },
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.size(width = 12.dp, height = 18.dp)) {
+            val w = size.width
+            val h = size.height
+            val bolt = Path().apply {
+                moveTo(w * 0.62f, 0f); lineTo(0f, h * 0.58f); lineTo(w * 0.48f, h * 0.58f)
+                lineTo(w * 0.36f, h); lineTo(w, h * 0.40f); lineTo(w * 0.52f, h * 0.40f); close()
+            }
+            val ink = if (on) Palette.Ink else Color.White
+            if (on) drawPath(bolt, ink) else drawPath(bolt, ink, style = Stroke(1.6.dp.toPx(), join = StrokeJoin.Round))
         }
     }
 }

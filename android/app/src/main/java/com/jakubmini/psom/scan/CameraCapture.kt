@@ -30,6 +30,8 @@ import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.text.SimpleDateFormat
@@ -53,6 +55,8 @@ class CameraCapture(private val context: Context, private val root: File) {
         val fast: Boolean = false,
         val coverage: List<Boolean> = List(36) { false },
         val error: String? = null,
+        val hasTorch: Boolean = false,
+        val torch: Boolean = false,
     )
 
     val ui = MutableStateFlow(Ui())
@@ -111,8 +115,11 @@ class CameraCapture(private val context: Context, private val root: File) {
                 val analysis = analysisBuilder.build()
                 analysis.setAnalyzer(exec, ::analyze)
                 p.unbindAll()
-                camera = p.bindToLifecycle(owner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
-                ui.value = ui.value.copy(error = null)
+                val cam = p.bindToLifecycle(owner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+                camera = cam
+                val hasTorch = cam.cameraInfo.hasFlashUnit()
+                if (hasTorch && ui.value.torch) cam.cameraControl.enableTorch(true)  // back from the background
+                ui.value = ui.value.copy(error = null, hasTorch = hasTorch, torch = hasTorch && ui.value.torch)
             } catch (e: Exception) {
                 Log.e(TAG, "camera failed to start", e)
                 ui.value = ui.value.copy(error = "The camera could not start: ${e.message ?: e.javaClass.simpleName}")
@@ -128,6 +135,14 @@ class CameraCapture(private val context: Context, private val root: File) {
         provider?.unbindAll()
         camera = null
         motion.stop()
+    }
+
+    /** The torch: steady light means shorter exposures, so less blur. Glossy things show its glare. */
+    fun setTorch(on: Boolean) {
+        val cam = camera ?: return
+        if (!ui.value.hasTorch) return
+        cam.cameraControl.enableTorch(on)
+        ui.value = ui.value.copy(torch = on)
     }
 
     fun startScan() {
@@ -211,7 +226,7 @@ class CameraCapture(private val context: Context, private val root: File) {
         writer = w
         val iso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
         w.meta(SessionMeta(iso.format(Date()), Build.MANUFACTURER, Build.MODEL, sensorOrientation(image), image.width, image.height))
-        w.event(t, "capture_start")
+        w.event(t, "capture_start", buildJsonObject { put("torch", ui.value.torch) })
         motion.sink = { ts, kind, x, y, z -> exec.execute { writer?.imu(ts, kind, x, y, z) } }
         scanning = true
     }
