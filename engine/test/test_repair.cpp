@@ -145,3 +145,25 @@ TEST(Repair, BoundaryLoopsFollowTheWinding) {
     ASSERT_EQ(loops.size(), 1u);
     EXPECT_EQ(loops[0].size(), 4u);
 }
+
+TEST(Repair, DropsAPieceFloatingAboveTheTableButKeepsOneStandingOnIt) {
+    auto at = [](Mesh m, cv::Vec3d o) {
+        for (auto& v : m.v) v += cv::Vec3f(float(o[0]), float(o[1]), float(o[2]));
+        return m;
+    };
+    auto add = [](Mesh& a, const Mesh& b) {
+        const int off = int(a.v.size());
+        for (auto& v : b.v) a.v.push_back(v);
+        for (auto f : b.f) a.f.push_back(f + cv::Vec3i(off, off, off));
+    };
+    Mesh m = at(icosphere(3, 0.03), {0, 0.03, 0});  // the object, on the table
+    add(m, at(icosphere(1, 0.01), {0, 0.1, 0}));      // a speck in the air, ~6 % of the faces
+    const psom::RepairReport r = psom::repair(m, floor_plane(), psom::RepairParams{});
+    EXPECT_EQ(r.components_removed, 1);
+    EXPECT_EQ(psom::validate(m).components, 1u);
+
+    Mesh two = at(icosphere(3, 0.03), {0, 0.03, 0});
+    add(two, at(icosphere(1, 0.01), {0.08, 0.01, 0}));  // the same size, standing beside it
+    psom::repair(two, floor_plane(), psom::RepairParams{});
+    EXPECT_EQ(psom::validate(two).components, 2u);
+}

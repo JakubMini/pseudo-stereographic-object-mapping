@@ -100,7 +100,9 @@ TEST(Sfm, PhotosOfABoxArePlacedWhereTheyWereTaken) {
     EXPECT_NEAR(r.K.fx, 500, 5) << "the session's guess was 540";
 
     // up from gravity, and a sensible working scale
+    const size_t photos = s.frames.size();
     ASSERT_TRUE(psom::apply_sfm(s, r).ok);
+    EXPECT_GE(s.frames.size() + 2, photos) << "at most a couple dropped for contradicting gravity";
     std::vector<cv::Matx44d> truth;
     for (auto& l : read_lines(p / "session" / "frames.jsonl")) {
         const json j = json::parse(l);
@@ -108,20 +110,20 @@ TEST(Sfm, PhotosOfABoxArePlacedWhereTheyWereTaken) {
         for (int k = 0; k < 16; ++k) T.val[k] = j["truth_pose"][k].get<double>();
         truth.push_back(psom::gl_to_cv(T));
     }
-    for (size_t i = 0; i < s.frames.size(); ++i) {
-        const cv::Vec3d up_true = truth[i].get_minor<3, 3>(0, 0).t() * cv::Vec3d(0, 1, 0);
-        const cv::Vec3d up = s.frames[i].R().t() * cv::Vec3d(0, 1, 0);
-        EXPECT_GT(up.dot(up_true), std::cos(CV_PI / 180)) << "frame " << i << " is tilted by more than 1 degree";
+    for (auto& f : s.frames) {
+        const cv::Vec3d up_true = truth[f.i].get_minor<3, 3>(0, 0).t() * cv::Vec3d(0, 1, 0);
+        const cv::Vec3d up = f.R().t() * cv::Vec3d(0, 1, 0);
+        EXPECT_GT(up.dot(up_true), std::cos(CV_PI / 180)) << "frame " << f.i << " is tilted by more than 1 degree";
     }
     // the orbit's shape: ratio of distances between camera centres matches the truth
-    const double s_true = cv::norm(cv::Vec3d(truth[0](0, 3), truth[0](1, 3), truth[0](2, 3)) -
-                                   cv::Vec3d(truth[12](0, 3), truth[12](1, 3), truth[12](2, 3)));
-    const double s_est = cv::norm(s.frames[0].center() - s.frames[12].center());
-    for (size_t i = 1; i < s.frames.size(); i += 5) {
-        const double dt = cv::norm(cv::Vec3d(truth[0](0, 3), truth[0](1, 3), truth[0](2, 3)) -
-                                   cv::Vec3d(truth[i](0, 3), truth[i](1, 3), truth[i](2, 3))) / s_true;
-        const double de = cv::norm(s.frames[0].center() - s.frames[i].center()) / s_est;
-        EXPECT_NEAR(de, dt, 0.01) << i;
+    auto C = [](const cv::Matx44d& T) { return cv::Vec3d(T(0, 3), T(1, 3), T(2, 3)); };
+    const psom::Frame& a = s.frames[0];
+    const psom::Frame& b = s.frames[s.frames.size() / 4];
+    const double s_true = cv::norm(C(truth[a.i]) - C(truth[b.i])), s_est = cv::norm(a.center() - b.center());
+    for (size_t k = 1; k < s.frames.size(); k += 5) {
+        const double dt = cv::norm(C(truth[a.i]) - C(truth[s.frames[k].i])) / s_true;
+        const double de = cv::norm(a.center() - s.frames[k].center()) / s_est;
+        EXPECT_NEAR(de, dt, 0.01) << s.frames[k].i;
     }
 }
 

@@ -14,7 +14,8 @@ struct SfmParams {
     int max_features = 3000;
     double contrast = 0.02;    // SIFT contrast threshold; OpenCV's 0.04 starves low-contrast scenes (COLMAP's equivalent is ~0.02)
     bool equalize = true;      // local contrast equalisation first: a dim room still has texture
-    int window = 10;           // each photo is matched with this many neighbours on either side (wrapping)
+    int window = 14;           // each photo is matched with this many neighbours on either side (wrapping);
+                               // 10 broke a blurry mug scan into pieces (24 of 100 placed, 59 at 14)
     double ratio = 0.8;        // Lowe's ratio test
     int min_inliers = 20;      // matches that survive the epipolar check for a pair to count (COLMAP: 15)
     double epipolar_px = 1.5;

@@ -34,7 +34,8 @@ share of the surface that was guessed, and the STEP header says so too. With the
 
 ## How a scan works
 
-1. Put the object on a table and point the camera at it.
+1. Put the object on a table and point the camera at it. In a dim room, switch the torch on: more
+   light means shorter exposures and sharper photos (glossy objects will show its glare).
 2. Press and **hold** the scan button and move slowly around it. A ring shows which directions you
    have covered; it says so when you turn too fast to stay sharp.
 3. Let go. The scan is already saved, so a crash or a failed reconstruction never means rescanning.

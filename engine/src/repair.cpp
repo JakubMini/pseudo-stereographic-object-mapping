@@ -35,8 +35,10 @@ std::string mm(double metres) {
     return b;
 }
 
-// Keeps the largest component and any holding at least `fraction` of the faces; returns how many went.
-int drop_small_components(Mesh& m, double fraction) {
+// Keeps the largest component and any holding at least `fraction` of the faces; with a support
+// plane, a component under `floating_fraction` also has to come within `reach` of the table, since
+// an object rests on it and a piece hanging in the air is noise. Returns how many went.
+int drop_small_components(Mesh& m, double fraction, const Plane& plane = {}, double floating_fraction = 0, double reach = 0) {
     UnionFind uf(m.v.size());
     for (auto& f : m.f) uf.unite(f[0], f[1]), uf.unite(f[1], f[2]);
     std::unordered_map<int, size_t> count;
@@ -44,13 +46,26 @@ int drop_small_components(Mesh& m, double fraction) {
     size_t biggest = 0;
     for (auto& [_, c] : count) biggest = std::max(biggest, c);
     const size_t min_faces = std::max<size_t>(1, size_t(fraction * m.f.size()));
+    std::unordered_map<int, double> lowest;
+    if (plane.found)
+        for (size_t v = 0; v < m.v.size(); ++v) {
+            const int r = uf.find(int(v));
+            const double h = plane.height(cv::Vec3d(m.v[v]));
+            auto it = lowest.find(r);
+            if (it == lowest.end()) lowest.emplace(r, h);
+            else it->second = std::min(it->second, h);
+        }
+    auto kept = [&](int r) {
+        const size_t c = count[r];
+        if (c == biggest) return true;
+        if (c < min_faces) return false;
+        return !plane.found || c >= floating_fraction * biggest || lowest[r] <= reach;
+    };
     std::vector<cv::Vec3i> keep;
-    for (auto& f : m.f) {
-        const size_t c = count[uf.find(f[0])];
-        if (c == biggest || c >= min_faces) keep.push_back(f);
-    }
+    for (auto& f : m.f)
+        if (kept(uf.find(f[0]))) keep.push_back(f);
     int removed = 0;
-    for (auto& [_, c] : count) removed += c != biggest && c < min_faces;
+    for (auto& [r, c] : count) removed += !kept(r);
     m.f.swap(keep);
     m.compact();
     return removed;
@@ -389,7 +404,7 @@ RepairReport repair(Mesh& m, const Plane& plane, const RepairParams& p) {
     if (m.f.empty()) return rep;
 
     // 1. small components
-    rep.components_removed = drop_small_components(m, p.min_component_fraction);
+    rep.components_removed = drop_small_components(m, p.min_component_fraction, plane, p.floating_fraction, p.plane_max);
 
     // 2. close what may be closed: the rim on the support plane, and small holes
     for (auto& loop : boundary_loops(m)) {

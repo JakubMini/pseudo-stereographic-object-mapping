@@ -666,6 +666,34 @@ Result apply_sfm(Session& s, const SfmResult& r, double distance) {
     int ng = 0;
     for (auto& f : frames)
         if (f.has_gravity) up += f.R() * device_up_to_camera(f.gravity, s.sensor_orientation), ++ng;
+    // A photo placed on false matches can come out tilted; its own gravity reading gives it away.
+    // Drop those that disagree with the others' up by more than a few degrees, then average again.
+    if (ng >= 3) {
+        const cv::Vec3d first = cv::normalize(up);
+        std::vector<Frame> kept;
+        cv::Vec3d up2(0, 0, 0);
+        int dropped = 0;
+        for (auto& f : frames) {
+            if (!f.has_gravity) { kept.push_back(f); continue; }
+            const cv::Vec3d u = f.R() * device_up_to_camera(f.gravity, s.sensor_orientation);
+            if (u.dot(first) < std::cos(10 * CV_PI / 180)) { ++dropped; continue; }
+            up2 += u;
+            kept.push_back(f);
+        }
+        // a second pass against the cleaner average, at the tighter tolerance
+        const cv::Vec3d second = cv::normalize(up2);
+        frames.clear(), up = {0, 0, 0}, ng = 0;
+        for (auto& f : kept) {
+            if (f.has_gravity) {
+                const cv::Vec3d u = f.R() * device_up_to_camera(f.gravity, s.sensor_orientation);
+                if (u.dot(second) < std::cos(5 * CV_PI / 180)) { ++dropped; continue; }
+                up += u, ++ng;
+            }
+            frames.push_back(f);
+        }
+        if (dropped) res.warn(std::to_string(dropped) + " photo(s) were placed at a tilt the phone's gravity sensor contradicts, and were left out");
+        if (frames.size() < 3) return Result::fail("poses", "Too few photos were placed.");
+    }
     const bool gravity = ng >= std::max<int>(3, int(frames.size()) / 2) && cv::norm(up) / ng > 0.9;
     if (gravity) {
         up = cv::normalize(up);
