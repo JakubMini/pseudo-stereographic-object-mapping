@@ -21,7 +21,7 @@ int usage() {
                  "usage:\n"
                  "  psom synth <project> [--shape box|cylinder] [--dims L,W,H] [--no-depth] [--photos] [--low-texture]\n"
                  "             [--tracking-loss] [--interrupted] [--frames N] [--pose-noise MM] [--seed N]\n"
-                 "  psom reconstruct <project> [--force-mvs] [--mem-mb N] [--faces N] [--mvs-width PX] [--mvs-window PX] [--verbose]\n"
+                 "  psom reconstruct <project> [--force-mvs] [--no-guess] [--mem-mb N] [--faces N] [--mvs-width PX] [--mvs-window PX] [--verbose]\n"
                  "  psom poses <project> [--verbose]     photo scans: camera poses only, nothing written\n"
                  "  psom export <project>\n"
                  "  psom evaluate <project> <truth.json>\n");
@@ -75,6 +75,7 @@ int main(int argc, char** argv) {
     if (cmd == "reconstruct") {
         psom::Options o;
         o.force_mvs = flag("--force-mvs");
+        o.guess = !flag("--no-guess");
         o.verbose = flag("--verbose");
         if (auto v = value("--mem-mb")) o.mem_mb = size_t(std::atoll(v));
         if (auto v = value("--faces")) o.face_budget = size_t(std::atoll(v));
@@ -92,6 +93,10 @@ int main(int argc, char** argv) {
         p.refine_focal = !s.focal_calibrated;
         if (auto v = value("--max-side")) p.max_side = std::atoi(v);
         if (auto v = value("--features")) p.max_features = std::atoi(v);
+        if (auto v = value("--contrast")) p.contrast = std::atof(v);
+        if (auto v = value("--equalize")) p.equalize = std::atoi(v) != 0;
+        if (auto v = value("--min-inliers")) p.min_inliers = std::atoi(v);
+        if (auto v = value("--epipolar")) p.epipolar_px = std::atof(v);
         if (auto v = value("--window")) p.window = std::atoi(v);
         if (auto v = value("--growth")) p.ba_growth = std::atof(v);
         psom::SfmResult out;

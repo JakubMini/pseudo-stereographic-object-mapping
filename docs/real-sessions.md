@@ -12,7 +12,7 @@ accurate it is. The MVP is not done until these exist and their errors are publi
 | `cylinder` | a can or a turned part | curved surface |
 | `tracking-loss` | the box, covering the lens for a second mid-scan | tracking-loss reporting |
 | `blur` | the box, moving fast on purpose | blur rejection |
-| `low-texture` | a plain white object | holes left open, no invented surface |
+| `low-texture` | a plain white object | the guessed share is reported; with `--no-guess`, holes left open |
 
 Scan on a table, walk all the way around, and include some views from above.
 

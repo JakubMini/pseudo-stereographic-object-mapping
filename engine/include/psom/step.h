@@ -19,7 +19,7 @@ struct StepInfo {
 // closed_valid AND the B-rep has no free or multiply-shared edges AND BRepCheck passes; otherwise
 // an open shell with a warning. The file is read back and checked before it replaces `out`.
 Result export_step(const Mesh& m, double m_to_mm, const Topology& topo, const std::filesystem::path& out,
-                   StepInfo& info);
+                   StepInfo& info, const std::string& note = {});
 
 // Reads a STEP back: counts solids and shells, checks validity, measures volume and bbox.
 struct StepCheck {

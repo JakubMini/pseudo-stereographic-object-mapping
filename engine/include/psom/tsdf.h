@@ -24,11 +24,20 @@ public:
     static constexpr int B = 8;
     struct Voxel {
         float sdf = 1.f;        // truncated, in units of trunc
-        float w = 0.f;          // observation weight
+        float w = 0.f;          // observation weight; kGuessed where fill_unseen() made it up
         float vx = 0, vy = 0, vz = 0;  // weighted sum of unit view directions
         float inv_var = 0.f;    // sum of 1/sigma^2 of the samples near the surface
     };
     struct Block { Voxel v[B * B * B]; };
+    static constexpr float kGuessed = -1.f;
+
+    struct FillReport {
+        size_t voxels = 0;        // voxels guessed
+        size_t specks = 0;        // observed voxels forgotten as noise (small pieces apart from the rest)
+        double cell_m = 0;        // size of the grid the guess was solved on
+        bool budget_hit = false;  // ran out of memory part way: some holes stay open
+        bool skipped = false;     // no room even for the solve
+    };
 
     SparseTsdf(const CropBox& box, const TsdfParams& p);
     // False once the budget is exhausted; the TSDF is then incomplete and must not be meshed.
@@ -37,6 +46,14 @@ public:
     size_t bytes() const;
     size_t blocks() const { return blocks_.size(); }
     static size_t block_bytes();
+    // Guesses the surface nobody saw. The measured signed distance is spread into unseen space by
+    // diffusion (Davis et al. 2002, "Filling holes in complex surfaces using volumetric diffusion"):
+    // a smooth field that matches every observed voxel, whose zero crossing bridges each hole the
+    // way a stretched membrane would. Voxels near that crossing are marked guessed (w = kGuessed) so
+    // extract() meshes them, with weight 0 on their vertices. The crop's floor is left open; the
+    // base cap closes it on the table. Run after the last integrate().
+    FillReport fill_unseen(size_t max_bytes);
+    // Meshes observed voxels and, after fill_unseen(), guessed ones.
     Mesh extract() const;
 
 private:

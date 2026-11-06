@@ -26,10 +26,11 @@ is valid CAD exchange data that keeps the scanned shape. It is **not** a feature
 model: there are no planes, cylinders or holes to edit, and it holds up to 20,000 faces. Fitted
 surfaces ("Mode B") are a later stage.
 
-The export is a **solid** only when the mesh is a validated closed shell. If parts of the object
-were never seen, the file is an **open shell** and the app says so. Missing surfaces are never
-invented; the only closures are the base on the observed table and holes under about 1 cm, and
-both are reported.
+The export is a **solid** only when the mesh is a validated closed shell. Parts of the object the
+photos never showed are **guessed**: the measured surface is carried smoothly across each gap, like
+a membrane stretched over it. A guess is a guess. The viewer paints it yellow, the report gives the
+share of the surface that was guessed, and the STEP header says so too. With the guess switched off
+(`--no-guess`), unseen parts stay open and the file is an **open shell**.
 
 ## How a scan works
 

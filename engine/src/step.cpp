@@ -91,7 +91,7 @@ StepCheck check_step(const fs::path& p) {
     return c;
 }
 
-Result export_step(const Mesh& m, double s, const Topology& topo, const fs::path& out, StepInfo& info) {
+Result export_step(const Mesh& m, double s, const Topology& topo, const fs::path& out, StepInfo& info, const std::string& note) {
     Result r;
     r.stage = "export";
     if (m.f.empty()) return Result::fail("export", "the mesh is empty");
@@ -221,9 +221,11 @@ Result export_step(const Mesh& m, double s, const Topology& topo, const fs::path
         APIHeaderSection_MakeHeader hdr(w.Model());
         hdr.SetName(new TCollection_HAsciiString("psom scan"));
         hdr.SetOriginatingSystem(new TCollection_HAsciiString("pseudo-stereographic-object-mapping"));
-        Handle(Interface_HArray1OfHAsciiString) desc = new Interface_HArray1OfHAsciiString(1, solid ? 1 : 2);
-        desc->SetValue(1, new TCollection_HAsciiString(kFaceted));
-        if (!solid) desc->SetValue(2, new TCollection_HAsciiString("OPEN SHELL: parts of the object were not seen."));
+        std::vector<std::string> lines{kFaceted};
+        if (!solid) lines.push_back("OPEN SHELL: parts of the object were not seen.");
+        if (!note.empty()) lines.push_back(note);
+        Handle(Interface_HArray1OfHAsciiString) desc = new Interface_HArray1OfHAsciiString(1, int(lines.size()));
+        for (size_t k = 0; k < lines.size(); ++k) desc->SetValue(int(k) + 1, new TCollection_HAsciiString(lines[k].c_str()));
         hdr.SetDescription(desc);
         if (w.Write(tmp.string().c_str()) != IFSelect_RetDone) return Result::fail("export", "STEP write failed");
 

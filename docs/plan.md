@@ -124,3 +124,13 @@ did the same. Jakub chose to drop ARCore and work the poses out from the photos 
 (structure from motion, in the engine). This is not live SLAM: nothing tracks while scanning, so the
 "no custom SLAM" line above still holds. Photos carry no size, so the two-point calibration is now
 required before export.
+
+## Decision, 2026-11-06: guess what wasn't seen, and mark it
+
+Scans came back patchy, and Jakub asked for the holes to be filled with a best guess from what was
+seen. This changes [A5]: unseen surfaces are no longer left open by default. The TSDF's measured
+signed distance is spread into unseen space by diffusion (Davis et al. 2002), and its zero crossing
+closes each gap smoothly. Every guessed vertex has weight 0, so the share of the surface that was
+guessed is in the report, painted yellow in the viewer, and written into the STEP header.
+`--no-guess` (Options::guess) keeps the old behaviour. A thin-plate (biharmonic) guess was tried
+too: it continued curvature, but it also grew blobs from the noise along each hole's edge.

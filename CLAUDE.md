@@ -28,9 +28,10 @@ agreement as Jakub's other projects, adapted to an Android app and a C++ engine.
 
 - **The session is immutable.** The app writes `session/` during capture only. The engine never
   writes there; everything derived goes in `recon/`. Retry, re-crop and recalibrate must never need a rescan.
-- **Never invent surfaces.** The only closures are the cap on the observed support plane and holes
-  under the size limit, and both are reported. A STEP solid only from a validated closed shell;
-  otherwise an open shell and a warning.
+- **A guessed surface is always marked.** What wasn't seen is filled by diffusion (`fill_unseen`),
+  and every guessed vertex carries weight 0 so the report (`guess.fraction`), the viewer (yellow) and
+  the STEP header can say how much was guessed. Never show a guess as measured. A STEP solid only
+  from a validated closed shell; otherwise an open shell and a warning.
 - **A written file is not success.** Every stage returns `{ok, stage, error, warnings}`; the STEP is
   read back and checked before it replaces the old one; `project.json` status moves only on `ok`.
 - **Confidence channels stay separate:** observation weight, view diversity, geometric

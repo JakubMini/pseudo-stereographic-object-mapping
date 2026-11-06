@@ -90,6 +90,7 @@ bool triangulate(const std::vector<cv::Matx33d>& R, const std::vector<cv::Vec3d>
     return std::isfinite(X[0]) && std::isfinite(X[1]) && std::isfinite(X[2]);
 }
 
+
 }  // namespace
 
 cv::Vec3d device_up_to_camera(const cv::Vec3d& g, int sensor_orientation_deg) {
@@ -390,13 +391,18 @@ Result run_sfm(const Session& s, const SfmParams& p, SfmResult& out, const Progr
         return cv::Vec2d((u.x - K.cx) / fx, (u.y - K.cy) / fx);
     };
 
-    // 4. the first two cameras: many matches and a real baseline
+    // 4. models: grow one from a good starting pair until no photo fits; if photos are left, start
+    // another from them (a fast swing or a blurry stretch breaks the chain).
     std::vector<int> cam_of(N, -1), cam_img;
     std::vector<cv::Matx33d> R;
     std::vector<cv::Vec3d> t, X;
-    {
-        std::vector<size_t> order(pairs.size());
-        std::iota(order.begin(), order.end(), 0);
+    std::vector<char> used(N, 0);  // in an earlier model: not a starting photo again
+
+    // The first two cameras: many matches and a real baseline. False if no pair qualifies.
+    auto start = [&]() -> bool {
+        std::vector<size_t> order;
+        for (size_t q = 0; q < pairs.size(); ++q)
+            if (!used[pairs[q].a] && !used[pairs[q].b]) order.push_back(q);
         std::sort(order.begin(), order.end(), [&](size_t x, size_t y) { return pairs[x].m.size() > pairs[y].m.size(); });
         double best_score = 0;
         cv::Matx33d bestR;
@@ -441,13 +447,13 @@ Result run_sfm(const Session& s, const SfmParams& p, SfmResult& out, const Progr
             const double score = good * std::min(med, 8.0);
             if (score > best_score) best_score = score, best = int(order[q]), bestR = Rb, bestT = tb;
         }
-        if (best < 0)
-            return Result::fail("poses", "The photos don't show the object from far enough apart. Walk around it rather than turning on the spot.");
+        if (best < 0) return false;
         cam_of[pairs[best].a] = 0, cam_of[pairs[best].b] = 1;
         cam_img = {pairs[best].a, pairs[best].b};
         R = {cv::Matx33d::eye(), bestR};
         t = {cv::Vec3d(0, 0, 0), bestT};
-    }
+        return true;
+    };
 
     // Triangulates tracks seen by at least two placed cameras that don't have a point yet.
     auto triangulate_new = [&]() {
@@ -509,65 +515,99 @@ Result run_sfm(const Session& s, const SfmParams& p, SfmResult& out, const Progr
         return rms;
     };
 
-    triangulate_new();
-    adjust(false, 20);
-    lap("init");
-
-    // 5. add the photo that sees the most known points, one at a time
-    std::vector<int> tried_at(N, 0);
-    size_t last_full = cam_img.size();
-    for (;;) {
-        P(0.5 + 0.45 * cam_img.size() / N);
-        int best = -1, best_n = 0;
-        for (int i = 0; i < N; ++i) {
-            if (cam_of[i] >= 0) continue;
-            int n = 0;
-            for (int ti : feat_track[i])
-                if (ti >= 0 && tracks[ti].pt >= 0) ++n;
-            if (n > best_n && n > tried_at[i] * 1.25) best = i, best_n = n;
-        }
-        if (best < 0 || best_n < 12) break;
-        std::vector<cv::Point3d> obj;
-        std::vector<cv::Point2d> img;
-        for (size_t f = 0; f < feat_track[best].size(); ++f) {
-            const int ti = feat_track[best][f];
-            if (ti < 0 || tracks[ti].pt < 0) continue;
-            const cv::Vec3d& Xk = X[tracks[ti].pt];
-            obj.emplace_back(Xk[0], Xk[1], Xk[2]);
-            img.push_back(im[best].kp[f]);
-        }
-        const cv::Matx33d Km(K.fx, 0, K.cx, 0, K.fx, K.cy, 0, 0, 1);
-        cv::Mat rvec, tvec, inl;
-        const bool ok = cv::solvePnPRansac(obj, img, Km, cv::noArray(), rvec, tvec, false, 300, float(p.pnp_px), 0.999, inl,
-                                           cv::SOLVEPNP_EPNP);
-        if (p.verbose)
-            std::fprintf(stderr, "{\"event\":\"place\",\"k\":%d,\"known\":%d,\"inliers\":%d,\"ok\":%d}\n", best, best_n, ok ? inl.rows : 0, int(ok));
-        if (!ok || inl.rows < 12 || inl.rows < 0.25 * obj.size()) {
-            tried_at[best] = best_n;
-            continue;
-        }
-        {  // polish the new camera alone on its inliers: cheap, and keeps drift down between full rounds
-            std::vector<cv::Point3d> o2;
-            std::vector<cv::Point2d> i2;
-            for (int r = 0; r < inl.rows; ++r) o2.push_back(obj[inl.at<int>(r)]), i2.push_back(img[inl.at<int>(r)]);
-            cv::solvePnPRefineLM(o2, i2, Km, cv::noArray(), rvec, tvec);
-        }
-        cam_of[best] = int(cam_img.size());
-        cam_img.push_back(best);
-        R.push_back(exp_so3({rvec.at<double>(0), rvec.at<double>(1), rvec.at<double>(2)}));
-        t.emplace_back(tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2));
-        triangulate_new();
-        // Re-adjusting everything after every photo costs O(photos^2) in all; between rounds the new
-        // camera's PnP pose is good enough to place the next one.
-        if (cam_img.size() >= last_full * p.ba_growth || cam_img.size() < 8) {
-            adjust(p.refine_focal && cam_img.size() >= 6, 8);
-            last_full = cam_img.size();
+    // Adds the photo that sees the most known points, one at a time, until none fits.
+    auto grow = [&]() {
+        std::vector<int> tried_at(N, 0);
+        size_t last_full = cam_img.size();
+        for (;;) {
+            P(0.5 + 0.45 * cam_img.size() / N);
+            int best = -1, best_n = 0;
+            for (int i = 0; i < N; ++i) {
+                if (cam_of[i] >= 0 || used[i]) continue;
+                int n = 0;
+                for (int ti : feat_track[i])
+                    if (ti >= 0 && tracks[ti].pt >= 0) ++n;
+                if (n > best_n && n > tried_at[i] * 1.25) best = i, best_n = n;
+            }
+            if (best < 0 || best_n < 12) return;
+            std::vector<cv::Point3d> obj;
+            std::vector<cv::Point2d> img;
+            for (size_t f = 0; f < feat_track[best].size(); ++f) {
+                const int ti = feat_track[best][f];
+                if (ti < 0 || tracks[ti].pt < 0) continue;
+                const cv::Vec3d& Xk = X[tracks[ti].pt];
+                obj.emplace_back(Xk[0], Xk[1], Xk[2]);
+                img.push_back(im[best].kp[f]);
+            }
+            const cv::Matx33d Km(K.fx, 0, K.cx, 0, K.fx, K.cy, 0, 0, 1);
+            cv::Mat rvec, tvec, inl;
+            const bool ok = cv::solvePnPRansac(obj, img, Km, cv::noArray(), rvec, tvec, false, 300, float(p.pnp_px), 0.999, inl,
+                                               cv::SOLVEPNP_EPNP);
+            if (p.verbose)
+                std::fprintf(stderr, "{\"event\":\"place\",\"k\":%d,\"known\":%d,\"inliers\":%d,\"ok\":%d}\n", best, best_n, ok ? inl.rows : 0, int(ok));
+            if (!ok || inl.rows < 12 || inl.rows < 0.25 * obj.size()) {
+                tried_at[best] = best_n;
+                continue;
+            }
+            {  // polish the new camera alone on its inliers: cheap, and keeps drift down between full rounds
+                std::vector<cv::Point3d> o2;
+                std::vector<cv::Point2d> i2;
+                for (int r = 0; r < inl.rows; ++r) o2.push_back(obj[inl.at<int>(r)]), i2.push_back(img[inl.at<int>(r)]);
+                cv::solvePnPRefineLM(o2, i2, Km, cv::noArray(), rvec, tvec);
+            }
+            cam_of[best] = int(cam_img.size());
+            cam_img.push_back(best);
+            R.push_back(exp_so3({rvec.at<double>(0), rvec.at<double>(1), rvec.at<double>(2)}));
+            t.emplace_back(tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2));
             triangulate_new();
+            // Re-adjusting everything after every photo costs O(photos^2) in all; between rounds the new
+            // camera's PnP pose is good enough to place the next one.
+            if (cam_img.size() >= last_full * p.ba_growth || cam_img.size() < 8) {
+                adjust(p.refine_focal && cam_img.size() >= 6, 8);
+                last_full = cam_img.size();
+                triangulate_new();
+            }
         }
+    };
+
+    // A model per stretch of photos that hold together; the biggest wins. Joining them on shared
+    // points was tried: on real scans the stretches break exactly where too little is shared to join.
+    struct Model {
+        std::vector<int> cam_img;
+        std::vector<cv::Matx33d> R;
+        std::vector<cv::Vec3d> t, X;
+        std::vector<int> pt;
+        std::vector<std::vector<char>> bad;
+        Intrinsics K;
+    };
+    Model best;
+    const Intrinsics K0 = K;
+    for (;;) {
+        cam_of.assign(N, -1), cam_img.clear(), R.clear(), t.clear(), X.clear();
+        for (auto& tr : tracks) tr.pt = -1, std::fill(tr.bad.begin(), tr.bad.end(), 0);
+        K = K0;
+        if (!start()) break;
+        triangulate_new();
+        adjust(false, 20);
+        grow();
+        if (p.verbose) std::fprintf(stderr, "{\"event\":\"model\",\"photos\":%zu}\n", cam_img.size());
+        for (int i : cam_img) used[i] = 1;
+        if (cam_img.size() > best.cam_img.size()) {
+            best = {cam_img, R, t, X, {}, {}, K};
+            for (auto& tr : tracks) best.pt.push_back(tr.pt), best.bad.push_back(tr.bad);
+        }
+        // no stretch left that could beat it
+        if (std::count(used.begin(), used.end(), 0) <= int(best.cam_img.size())) break;
     }
+    cam_img = best.cam_img, R = best.R, t = best.t, X = best.X, K = best.K;
+    cam_of.assign(N, -1);
+    for (size_t c = 0; c < cam_img.size(); ++c) cam_of[cam_img[c]] = int(c);
+    for (size_t k = 0; k < tracks.size() && !best.pt.empty(); ++k) tracks[k].pt = best.pt[k], tracks[k].bad = best.bad[k];
+    if (cam_img.empty())
+        return Result::fail("poses", "The photos don't show the object from far enough apart. Walk around it rather than turning on the spot.");
+    lap("init");
     if (cam_img.size() < 3)
         return Result::fail("poses", "Only " + std::to_string(cam_img.size()) + " photos fitted together. Move slower and keep the object in view.");
-
     lap("placing");
     adjust(p.refine_focal, 30);
     triangulate_new();

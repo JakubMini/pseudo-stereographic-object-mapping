@@ -11,6 +11,7 @@ struct Options {
     bool force_mvs = false;   // ignore raw depth (tests the fallback)
     size_t mem_mb = 1024;     // TSDF memory budget
     size_t face_budget = 20000;
+    bool guess = true;        // close what wasn't seen with a smooth guess, reported and marked on the mesh
     bool verbose = false;     // per-frame depth diagnostics on stderr
     MvsParams mvs;
 };

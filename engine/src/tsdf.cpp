@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+
+#include <opencv2/core/utility.hpp>
 
 namespace psom {
 
@@ -115,6 +118,223 @@ bool SparseTsdf::integrate(const DepthMap& m, const cv::Matx44d& T_wc) {
     return true;
 }
 
+SparseTsdf::FillReport SparseTsdf::fill_unseen(size_t max_bytes) {
+    FillReport rep;
+    if (over_budget_) return rep;
+    // The solve runs on a dense grid of cells f voxels wide; f grows until it fits in max_bytes.
+    int f = 1;
+    cv::Vec3i n;
+    auto cells = [&] {
+        for (int k = 0; k < 3; ++k) n[k] = (dims_[k] + f - 1) / f;
+        return size_t(n[0]) * n[1] * n[2];
+    };
+    while (cells() * 6 * 8 / 7 > max_bytes && f < 8) ++f;  // val + fixed + band, plus the coarser levels
+    if (cells() * 6 * 8 / 7 > max_bytes) return rep.skipped = true, rep;
+    rep.cell_m = f * p_.voxel;
+
+    // 1. observed cells: the mean of their observed voxels, held fixed
+    struct Level {
+        cv::Vec3i n;
+        std::vector<float> val;
+        std::vector<uint8_t> fixed;
+        size_t at(int x, int y, int z) const { return size_t(x) + size_t(n[0]) * (size_t(y) + size_t(n[1]) * z); }
+    };
+    std::vector<Level> lv(1);
+    lv[0].n = n;
+    lv[0].val.assign(cells(), 0.f);
+    lv[0].fixed.assign(cells(), 0);
+    {
+        std::vector<uint16_t> cnt(cells(), 0);
+        for (size_t bi = 0; bi < blocks_.size(); ++bi) {
+            const cv::Vec3i bc = block_coords_[bi];
+            for (int l = 0; l < B * B * B; ++l) {
+                const Voxel& vx = blocks_[bi]->v[l];
+                if (vx.w < p_.min_weight) continue;
+                const int gx = bc[0] * B + l % B, gy = bc[1] * B + (l / B) % B, gz = bc[2] * B + l / (B * B);
+                if (gx >= dims_[0] || gy >= dims_[1] || gz >= dims_[2]) continue;
+                const size_t c = lv[0].at(gx / f, gy / f, gz / f);
+                lv[0].val[c] += vx.sdf;
+                if (cnt[c] < 65535) ++cnt[c];
+            }
+        }
+        for (size_t c = 0; c < cells(); ++c)
+            if (cnt[c]) lv[0].val[c] /= cnt[c], lv[0].fixed[c] = 1;
+    }
+    // Specks of noise would anchor the guess and grow tentacles to reach it: forget near-surface
+    // pieces much smaller than the biggest one (repair would drop them as fragments anyway).
+    {
+        Level& L = lv[0];
+        std::vector<int> comp(cells(), -1);
+        std::vector<size_t> sizes;
+        std::vector<size_t> stack;
+        auto surf = [&](size_t i) { return L.fixed[i] && std::abs(L.val[i]) < 0.99f; };
+        for (size_t s0 = 0; s0 < cells(); ++s0) {
+            if (comp[s0] >= 0 || !surf(s0)) continue;
+            const int id = int(sizes.size());
+            size_t count = 0;
+            comp[s0] = id, stack = {s0};
+            while (!stack.empty()) {
+                const size_t i = stack.back();
+                stack.pop_back();
+                ++count;
+                const int x = int(i % n[0]), y = int((i / n[0]) % n[1]), z = int(i / (size_t(n[0]) * n[1]));
+                for (int dz = -1; dz <= 1; ++dz)
+                    for (int dy = -1; dy <= 1; ++dy)
+                        for (int dx = -1; dx <= 1; ++dx) {
+                            const int xx = x + dx, yy = y + dy, zz = z + dz;
+                            if (xx < 0 || yy < 0 || zz < 0 || xx >= n[0] || yy >= n[1] || zz >= n[2]) continue;
+                            const size_t j = L.at(xx, yy, zz);
+                            if (comp[j] < 0 && surf(j)) comp[j] = id, stack.push_back(j);
+                        }
+            }
+            sizes.push_back(count);
+        }
+        const size_t biggest = sizes.empty() ? 0 : *std::max_element(sizes.begin(), sizes.end());
+        std::vector<uint8_t> drop(cells(), 0);
+        for (size_t i = 0; i < cells(); ++i)
+            if (comp[i] >= 0 && sizes[comp[i]] * 20 < biggest) drop[i] = 1, L.fixed[i] = 0, L.val[i] = 0;
+        for (size_t bi = 0; bi < blocks_.size(); ++bi) {
+            const cv::Vec3i bc = block_coords_[bi];
+            for (int l = 0; l < B * B * B; ++l) {
+                Voxel& vx = blocks_[bi]->v[l];
+                const int gx = bc[0] * B + l % B, gy = bc[1] * B + (l / B) % B, gz = bc[2] * B + l / (B * B);
+                if (vx.w < p_.min_weight || gx >= dims_[0] || gy >= dims_[1] || gz >= dims_[2]) continue;
+                if (drop[L.at(gx / f, gy / f, gz / f)]) vx = Voxel{}, ++rep.specks;
+            }
+        }
+    }
+    // coarser levels, each half the size, for a quick first guess that the finer ones refine
+    while (std::max({lv.back().n[0], lv.back().n[1], lv.back().n[2]}) > 16) {
+        const Level& a = lv.back();
+        Level b;
+        for (int k = 0; k < 3; ++k) b.n[k] = (a.n[k] + 1) / 2;
+        const size_t nb = size_t(b.n[0]) * b.n[1] * b.n[2];
+        b.val.assign(nb, 0.f);
+        b.fixed.assign(nb, 0);
+        std::vector<uint8_t> cnt(nb, 0);
+        for (int z = 0; z < a.n[2]; ++z)
+            for (int y = 0; y < a.n[1]; ++y)
+                for (int x = 0; x < a.n[0]; ++x) {
+                    const size_t i = a.at(x, y, z);
+                    if (!a.fixed[i]) continue;
+                    const size_t j = b.at(x / 2, y / 2, z / 2);
+                    b.val[j] += a.val[i], ++cnt[j];
+                }
+        for (size_t j = 0; j < nb; ++j)
+            if (cnt[j]) b.val[j] /= cnt[j], b.fixed[j] = 1;
+        lv.push_back(std::move(b));
+    }
+
+    // 2. Laplace on the free cells (a membrane), red-black SOR, coarse to fine. Outside the box is
+    // empty space (+1); below the floor the field just continues (no flux), so the surface meets the
+    // floor instead of closing. A thin plate (biharmonic) was tried: it carries curvature on, but
+    // also every bump along a hole's noisy edge, and grows blobs.
+    auto relax = [&](Level& L, int iterations) {
+        const int nx = L.n[0], ny = L.n[1], nz = L.n[2];
+        for (int it = 0; it < iterations; ++it)
+            for (int colour = 0; colour < 2; ++colour)
+                cv::parallel_for_(cv::Range(0, nz), [&](const cv::Range& r) {
+                    for (int z = r.start; z < r.end; ++z)
+                        for (int y = 0; y < ny; ++y)
+                            for (int x = (y + z + colour) & 1; x < nx; x += 2) {
+                                const size_t i = L.at(x, y, z);
+                                if (L.fixed[i]) continue;
+                                float sum = 0;
+                                int k = 0;
+                                auto nb = [&](int xx, int yy, int zz) {
+                                    if (zz < 0) return;  // floor: no flux
+                                    if (xx < 0 || yy < 0 || xx >= nx || yy >= ny || zz >= nz) sum += 1.f;
+                                    else sum += L.val[L.at(xx, yy, zz)];
+                                    ++k;
+                                };
+                                nb(x - 1, y, z), nb(x + 1, y, z), nb(x, y - 1, z), nb(x, y + 1, z), nb(x, y, z - 1), nb(x, y, z + 1);
+                                L.val[i] += 1.8f * (sum / k - L.val[i]);
+                            }
+                });
+    };
+    {
+        Level& top = lv.back();
+        for (size_t i = 0; i < top.val.size(); ++i)
+            if (!top.fixed[i]) top.val[i] = 1.f;
+        relax(top, 200);
+    }
+    for (int l = int(lv.size()) - 2; l >= 0; --l) {
+        Level& a = lv[l];
+        const Level& b = lv[l + 1];
+        for (int z = 0; z < a.n[2]; ++z)
+            for (int y = 0; y < a.n[1]; ++y)
+                for (int x = 0; x < a.n[0]; ++x) {
+                    const size_t i = a.at(x, y, z);
+                    if (!a.fixed[i]) a.val[i] = b.val[b.at(x / 2, y / 2, z / 2)];
+                }
+        relax(a, l == 0 ? 40 : 60);
+    }
+
+    // 3. write back the free cells along the field's zero crossing, one cell either side
+    Level& L = lv[0];
+    std::vector<uint8_t> band(L.val.size(), 0);
+    for (int z = 0; z < n[2]; ++z)
+        for (int y = 0; y < n[1]; ++y)
+            for (int x = 0; x < n[0]; ++x) {
+                const size_t i = L.at(x, y, z);
+                const bool neg = L.val[i] < 0;
+                bool cross = false;
+                if (x + 1 < n[0]) cross |= (L.val[L.at(x + 1, y, z)] < 0) != neg;
+                if (y + 1 < n[1]) cross |= (L.val[L.at(x, y + 1, z)] < 0) != neg;
+                if (z + 1 < n[2]) cross |= (L.val[L.at(x, y, z + 1)] < 0) != neg;
+                if (!cross) continue;
+                for (int dz = -1; dz <= 2; ++dz)
+                    for (int dy = -1; dy <= 2; ++dy)
+                        for (int dx = -1; dx <= 2; ++dx) {
+                            const int xx = x + dx, yy = y + dy, zz = z + dz;
+                            if (xx >= 0 && yy >= 0 && zz >= 0 && xx < n[0] && yy < n[1] && zz < n[2]) band[L.at(xx, yy, zz)] = 1;
+                        }
+            }
+    auto field = [&](int gx, int gy, int gz) {  // trilinear, at a voxel centre
+        const double p[3] = {(gx + 0.5) / f - 0.5, (gy + 0.5) / f - 0.5, (gz + 0.5) / f - 0.5};
+        int i0[3];
+        double t[3];
+        for (int k = 0; k < 3; ++k) {
+            const double q = std::clamp(p[k], 0.0, double(n[k] - 1));
+            i0[k] = std::min(int(q), n[k] - 2 < 0 ? 0 : n[k] - 2);
+            t[k] = n[k] > 1 ? q - i0[k] : 0;
+        }
+        double s = 0;
+        for (int c = 0; c < 8; ++c) {
+            const int x = std::min(i0[0] + (c & 1), n[0] - 1), y = std::min(i0[1] + ((c >> 1) & 1), n[1] - 1),
+                      z = std::min(i0[2] + ((c >> 2) & 1), n[2] - 1);
+            const double wgt = ((c & 1) ? t[0] : 1 - t[0]) * ((c & 2) ? t[1] : 1 - t[1]) * ((c & 4) ? t[2] : 1 - t[2]);
+            s += wgt * L.val[L.at(x, y, z)];
+        }
+        return float(std::clamp(s, -1.0, 1.0));
+    };
+    for (int z = 0; z < n[2]; ++z)
+        for (int y = 0; y < n[1]; ++y)
+            for (int x = 0; x < n[0]; ++x) {
+                if (!band[L.at(x, y, z)]) continue;
+                for (int gz = z * f; gz < std::min(dims_[2], (z + 1) * f); ++gz)
+                    for (int gy = y * f; gy < std::min(dims_[1], (y + 1) * f); ++gy)
+                        for (int gx = x * f; gx < std::min(dims_[0], (x + 1) * f); ++gx) {
+                            const Key k = key(gx / B, gy / B, gz / B);
+                            auto it = index_.find(k);
+                            Block* b = nullptr;
+                            if (it != index_.end()) b = blocks_[it->second].get();
+                            else if ((blocks_.size() + 1) * block_bytes() <= p_.budget_bytes) b = get_or_alloc(gx / B, gy / B, gz / B);
+                            if (!b) {
+                                rep.budget_hit = true;
+                                continue;
+                            }
+                            Voxel& vx = b->v[(gx % B) + B * ((gy % B) + B * (gz % B))];
+                            if (vx.w >= p_.min_weight || vx.w == kGuessed) continue;
+                            vx = Voxel{};
+                            vx.sdf = field(gx, gy, gz);
+                            vx.w = kGuessed;
+                            ++rep.voxels;
+                        }
+            }
+    return rep;
+}
+
 Mesh SparseTsdf::extract() const {
     Mesh mesh;
     if (over_budget_) return mesh;
@@ -128,7 +348,7 @@ Mesh SparseTsdf::extract() const {
         Corner c;
         c.P = box_.to_world(L);
         c.s = std::abs(vx.sdf) < 1e-6 ? 1e-6 : vx.sdf;  // keep vertices strictly inside edges
-        c.w = vx.w;
+        c.w = std::max(0.f, vx.w);
         const double vn = std::sqrt(double(vx.vx) * vx.vx + double(vx.vy) * vx.vy + double(vx.vz) * vx.vz);
         c.div = vx.w > 0 ? std::clamp(1.0 - vn / vx.w, 0.0, 1.0) : 0.0;
         c.sig = vx.inv_var > 0 ? 1.0 / std::sqrt(double(vx.inv_var)) : 0.0;
@@ -153,7 +373,7 @@ Mesh SparseTsdf::extract() const {
                     bool ok = true, pos = false, neg = false;
                     for (int c = 0; c < 8 && ok; ++c) {
                         vs[c] = voxel_at(gx + (c & 1), gy + ((c >> 1) & 1), gz + ((c >> 2) & 1));
-                        if (!vs[c] || vs[c]->w < p_.min_weight) ok = false;  // unobserved: leave a hole
+                        if (!vs[c] || (vs[c]->w < p_.min_weight && vs[c]->w != kGuessed)) ok = false;  // unobserved: a hole
                         else (vs[c]->sdf < 0 ? neg : pos) = true;
                     }
                     if (!ok || !pos || !neg) continue;

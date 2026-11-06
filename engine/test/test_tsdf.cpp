@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <map>
 
 #include "psom/repair.h"
 #include "psom/tsdf.h"
@@ -96,4 +97,42 @@ TEST(Tsdf, MemoryBudgetIsEnforced) {
     EXPECT_LE(t.blocks(), 10u);
     EXPECT_LE(t.bytes(), budget);
     EXPECT_TRUE(t.extract().f.empty());  // an incomplete TSDF is never meshed
+}
+
+TEST(Tsdf, UnseenSideIsGuessedClosedAndMarked) {
+    psom::CropBox b = box();
+    b.axes = cv::Matx33d(1, 0, 0, 0, 0, -1, 0, 1, 0);  // local z is up, as in the pipeline: the floor is below the sphere
+    psom::SparseTsdf t(b, {0.001, 0.005, size_t(1) << 30, 0.5});
+    const auto poses = orbit();
+    for (size_t k = 8; k < 12; ++k) t.integrate(sphere_depth(poses[k]), poses[k]);  // half way round, level: the back never seen
+    ASSERT_FALSE(psom::validate(t.extract()).closed_valid);
+
+    const psom::SparseTsdf::FillReport rep = t.fill_unseen(size_t(256) << 20);
+    EXPECT_GT(rep.voxels, 0u);
+    EXPECT_FALSE(rep.budget_hit);
+    const psom::Mesh m = t.extract();
+    // closed everywhere except where the guess meets the floor, which the base cap closes on the table
+    std::map<std::pair<int, int>, int> edges;
+    for (auto& f : m.f)
+        for (int k = 0; k < 3; ++k) ++edges[std::minmax(f[k], f[(k + 1) % 3])];
+    size_t open = 0, off_floor = 0;
+    for (auto& [e, n] : edges) {
+        if (n == 2) continue;
+        ++open;
+        const double h = b.to_local(cv::Vec3d(m.v[e.first]))[2] + b.half[2];
+        if (n != 1 || h > 0.002) ++off_floor;
+    }
+    EXPECT_EQ(off_floor, 0u) << open << " open edges";
+    size_t guessed = 0;
+    double worst_seen = 0, worst_guess = 0;
+    for (size_t i = 0; i < m.v.size(); ++i) {
+        const double e = std::abs(cv::norm(cv::Vec3d(m.v[i]) - kC) - kR);
+        if (m.weight[i] < 0.25f) ++guessed, worst_guess = std::max(worst_guess, e);
+        else worst_seen = std::max(worst_seen, e);
+    }
+    EXPECT_GT(guessed, m.v.size() / 50);
+    EXPECT_LT(guessed, m.v.size() * 3 / 4);
+    EXPECT_LT(worst_seen, 0.0015);   // what was seen is not moved by the guess
+    // a membrane across the gap: flatter than the sphere, inside it, never further out than the radius
+    EXPECT_LT(worst_guess, kR);
 }

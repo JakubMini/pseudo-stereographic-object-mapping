@@ -399,6 +399,7 @@ Result reconstruct(const fs::path& project, const Options& o, const Progress& pr
     bool coarsened = false;
     Mesh mesh;
     size_t blocks = 0, bytes = 0;
+    SparseTsdf::FillReport guess;
     for (int attempt = 0;; ++attempt) {
         SparseTsdf tsdf(box, {voxel, std::max(5 * voxel, 0.005), budget, 0.5});
         bool ok = true;
@@ -408,6 +409,12 @@ Result reconstruct(const fs::path& project, const Options& o, const Progress& pr
             P("fusion", double(i + 1) / n);
         }
         if (ok) {
+            if (o.guess) {
+                P("guess", 0);
+                guess = tsdf.fill_unseen(budget > tsdf.bytes() ? (budget - tsdf.bytes()) / 2 : 0);
+                if (guess.skipped) res.warn("not enough memory to guess the unseen surface: the holes stay open");
+                if (guess.budget_hit) res.warn("the memory budget ran out while guessing: some holes stay open");
+            }
             blocks = tsdf.blocks();
             bytes = tsdf.bytes();
             P("mesh", 0);
@@ -437,6 +444,21 @@ Result reconstruct(const fs::path& project, const Options& o, const Progress& pr
     const RepairReport rr = repair(mesh, plane, rp);
     for (auto& w : rr.warnings) res.warn(w);
     if (mesh.f.empty()) return failed(Result::fail("repair", "nothing was left after removing fragments"));
+    // Guessed faces: their vertices were made by fill_unseen (weight 0); a seen vertex has at least
+    // the TSDF's min weight (0.5), and decimation averages the two, so the cut is at a quarter.
+    double area_all = 0, area_guessed = 0;
+    std::vector<float> seen_w, seen_div, seen_sig;
+    for (auto& t : mesh.f) {
+        const cv::Vec3d a(mesh.v[t[0]]), b(mesh.v[t[1]]), c(mesh.v[t[2]]);
+        const double A = 0.5 * cv::norm((b - a).cross(c - a));
+        area_all += A;
+        if (mesh.has_channels() && (mesh.weight[t[0]] + mesh.weight[t[1]] + mesh.weight[t[2]]) / 3 < 0.25) area_guessed += A;
+    }
+    for (size_t i = 0; i < mesh.weight.size(); ++i)
+        if (mesh.weight[i] >= 0.25) seen_w.push_back(mesh.weight[i]), seen_div.push_back(mesh.diversity[i]), seen_sig.push_back(mesh.sigma[i]);
+    const double guessed_fraction = area_all > 0 ? area_guessed / area_all : 0;
+    if (area_guessed > 0)
+        res.warn(fmt("%.0f", guessed_fraction * 100) + " % of the surface was guessed, not seen: it bridges what the photos missed and may be wrong there (shown yellow)");
     const Topology topo = validate(mesh);
     if (!topo.closed_valid) {
         std::string why;
@@ -516,10 +538,13 @@ Result reconstruct(const fs::path& project, const Options& o, const Progress& pr
                     {"small_holes_filled", rr.holes_filled}, {"small_holes_area_mm2", rr.holes_area * 1e6},
                     {"holes_left_open", rr.holes_open}, {"open_rim_mm", rr.open_perimeter * 1000}, {"decimated", rr.decimated}}},
         {"topology", topo_json(topo)},
-        {"confidence", {{"observation_weight", stats(mesh.weight)},
-                        {"view_diversity", stats(mesh.diversity)},
-                        {"fused_sigma_mm", stats(mesh.sigma, 1000)},
-                        {"note", "Three separate channels. None of them is a measure of accuracy; fused sigma assumes independent noise per view."}}},
+        {"guess", {{"enabled", o.guess}, {"voxels", guess.voxels}, {"cell_mm", guess.cell_m * 1000},
+                   {"area_cm2", area_guessed * 1e4}, {"fraction", guessed_fraction}, {"budget_hit", guess.budget_hit},
+                   {"method", "volumetric diffusion of the signed distance into unseen space; faces whose vertices have weight below 0.25"}}},
+        {"confidence", {{"observation_weight", stats(seen_w)},
+                        {"view_diversity", stats(seen_div)},
+                        {"fused_sigma_mm", stats(seen_sig, 1000)},
+                        {"note", "Three separate channels, over the seen surface only. None of them is a measure of accuracy; fused sigma assumes independent noise per view."}}},
         {"dimensions_mm", dims},
         {"export", nullptr},
     };
@@ -559,7 +584,11 @@ Result export_project(const fs::path& project, const Progress& progress) {
         return failed(Result::fail("export", "Set the scale first. Photos alone don't tell how big the object is."));
     const Topology topo = validate(m);
     StepInfo info;
-    Result r = export_step(m, 1000 * factor, topo, project / "recon" / "model.step", info);
+    std::string note;
+    const double guessed = rep.is_object() ? rep.value("guess", json::object()).value("fraction", 0.0) : 0.0;
+    if (guessed >= 0.01)
+        note = "GUESSED: " + fmt("%.0f", guessed * 100) + " % of the surface was not seen and was filled in smoothly; it may be wrong there.";
+    Result r = export_step(m, 1000 * factor, topo, project / "recon" / "model.step", info, note);
     if (!r.ok) return failed(r);
     res.absorb(r);
 

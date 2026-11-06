@@ -71,12 +71,14 @@ INSTANTIATE_TEST_SUITE_P(Shapes, SyntheticGate,
                                            Gate{"cylinder_mvs", "cylinder", {50, 50, 80}, false, 4.0}),
                          [](const auto& info) { return info.param.name; });
 
-TEST(Pipeline, LowTextureLeavesHolesInsteadOfInventingSurface) {
+TEST(Pipeline, LowTextureIsLeftOpenOrGuessedAndSaysWhich) {
     psom::SynthSpec sp;
     sp.depth = false;
     sp.low_texture = true;
     const fs::path p = synth_copy("lowtex", sp, "lowtex");
-    const psom::Result r = psom::reconstruct(p, psom::Options{});
+    psom::Options seen_only;
+    seen_only.guess = false;
+    const psom::Result r = psom::reconstruct(p, seen_only);
     if (!r.ok) {
         // failing outright is also honest, as long as it says where
         EXPECT_FALSE(r.stage.empty());
@@ -84,11 +86,21 @@ TEST(Pipeline, LowTextureLeavesHolesInsteadOfInventingSurface) {
         return;
     }
     EXPECT_TRUE(has(r, "low texture"));
-    const json rep = read(p / "recon" / "report.json");
+    json rep = read(p / "recon" / "report.json");
     EXPECT_FALSE(rep["topology"]["closed_valid"].get<bool>());
     EXPECT_GT(rep["repair"]["holes_left_open"].get<int>(), 0);
     ASSERT_TRUE(psom::export_project(p).ok);
     EXPECT_EQ(psom::check_step(p / "recon" / "model.step").solids, 0);
+
+    // The default guesses what wasn't seen, and says how much, in the report and in the STEP itself.
+    const psom::Result g = psom::reconstruct(p, psom::Options{});
+    ASSERT_TRUE(g.ok) << g.stage << ": " << g.error;
+    EXPECT_TRUE(has(g, "guessed"));
+    rep = read(p / "recon" / "report.json");
+    EXPECT_GT(rep["guess"]["fraction"].get<double>(), 0.05);
+    EXPECT_LT(rep["repair"]["holes_left_open"].get<int>(), 3);
+    ASSERT_TRUE(psom::export_project(p).ok);
+    EXPECT_NE(slurp(p / "recon" / "model.step").find("GUESSED"), std::string::npos);
 }
 
 TEST(Pipeline, TrackingLossIsReported) {
